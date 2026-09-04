@@ -344,7 +344,13 @@ static bool Probe(int gpu_index, const LUID* want_luid, ProbeResult* out) {
     fci.PathListInfo = NGXPathListInfo{ paths, 1 };
     fci.LoggingInfo.LoggingCallback = NGXLog;
     fci.LoggingInfo.MinimumLoggingLevel = NGX_LOG_VERBOSE;
-    fci.LoggingInfo.DisableOtherLoggingSinks = EnvInt("DLSS5NR_DISABLE_OTHER_SINKS", 0) != 0;
+    // Default ON, unlike the bridge. NGX keeps its own console sink in addition
+    // to calling our callback, so every line arrives twice - visible on the
+    // first probe run, where output also interleaved mid-word ("sg] adapter:").
+    // In --serve mode stdout carries raw RGBA frames, and a sink writing there
+    // would corrupt the stream in a way that looks like a protocol bug. Set
+    // DLSS5NR_DISABLE_OTHER_SINKS=0 to get the duplicates back for debugging.
+    fci.LoggingInfo.DisableOtherLoggingSinks = EnvInt("DLSS5NR_DISABLE_OTHER_SINKS", 1) != 0;
 
     const int ver = EnvInt("DLSS5NR_SDK_VERSION", 0x15);
     const std::string project_id = EnvString("DLSS5NR_PROJECT_ID", PROJECT_ID);

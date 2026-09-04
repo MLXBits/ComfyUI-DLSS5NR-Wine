@@ -240,32 +240,53 @@ have. If it does not, we learn that early and have lost two days.
 
 ### Status
 
-`native/dlssg_host.cpp` is the probe, written and wired into
-`install/build_native.sh` (step 3.5, output `<root>/dlssg/dlssg_host.exe`).
-**It has never been compiled** — there is no MinGW cross-compiler on the
-machine it was written on, and it has to run on the box with the GPU and the
-Wine prefix regardless. First run:
+**Probe: PASSED, 2026-09-04, quistis (RTX 5090, driver 610.57.04, CachyOS,
+GE-Proton11-6, vkd3d-proton 3.1.0, DXVK 3.10).** Built clean on the first
+compile; ran clean on the first attempt.
+
+```
+[dlssg] Init_ProjectID -> 0x00000001
+[dlssg] FrameGeneration.Available -> 0x00000001, value 1
+[dlssg] DLSSG.MultiFrameCountMax -> 0x00000001, value 5
+{"available":true,"multi_frame_count_max":5,"worker_version":"probe-1", ...}
+```
+
+Feature 11 initializes and is available on the Wine path. The remaining risk
+is entirely in output quality, not feasibility.
+
+Measured facts worth not re-deriving:
+
+| | |
+|---|---|
+| `MultiFrameCountMax` | **5** — up to 6x. `MULTIPLIER_CHOICES` already tops out there and needs no clamp |
+| NGX core API | `0x15`; the dlssg snippet requires at least `0x13`, so the bridge's `DLSS5NR_SDK_VERSION` default carries over |
+| GPU arch | `0x1B0` (Blackwell); snippet minimum `0x190` |
+| driver | 610.57 against a snippet minimum of 520.0 — a wide margin, unlike the NR snippet |
+| snippet | `310.7.0`, loaded as `feature dlssg`, `NGXCubinD3D12::Init` clean, `Build - PRODUCTION` |
+| project id | the DLSSNR/RenoDX id was accepted; no `FAIL_Denied`, so no separate id is needed |
+
+Benign noise, do not chase: `NGXLoadFromPath failed: -1160773628` and
+"doesn't exist in any of the search paths" for every other snippet
+(`nvngx_dlss.dll`, `nvngx_dldenoiser.dll`, …) — NGX probes for all features it
+knows about. Also `NGXGetPathUsingQAI` registry errors, "Telemetry not
+supported on Linux", and "Override shared memory open failure".
+
+NGX writes a `nvngx.log` and `nvngx_dlssg_310_7_0.log` into the runtime
+directory. Harmless, but that is why they appear.
+
+To re-run it:
 
 ```bash
-git pull && install/build_native.sh          # builds it alongside the other three
-wine <root>/dlssg/dlssg_host.exe --probe     # or: DLSS5NR_DLSSG_DIR=... wine ...
+cd <root>/dlssg
+DISPLAY=:0 WINEPREFIX=<prefix> WINEDLLOVERRIDES="d3d12,d3d12core,nvapi64,dxgi=n,b" \
+DXVK_ENABLE_NVAPI=1 WINEDEBUG=-all <wine> ./dlssg_host.exe --probe
 ```
 
-Expect to fix compile errors on that first pass. What the probe reports:
+### Next
 
-```json
-{"available":true,"multi_frame_count_max":3,"worker_version":"probe-1",
- "gpu":"NVIDIA GeForce RTX 5090","detail":"feature 11 available on ..."}
-```
-
-with the NGX conversation on stderr — `Init_ProjectID -> 0x…`,
-`FrameGeneration.Available -> …`, and on failure the
-`FrameGeneration.FeatureInitResult` code, which is the single most useful
-number when the answer is no.
-
-The reference worker's own `--probe` is the control: run both, compare. If it
-says available and ours does not, the difference is in our init, not in the
-stack.
+With feasibility settled, the next milestone is `--serve`: the D3D12 session,
+upload/readback, the parameter map from section 5, and the evaluate loop. The
+three unknowns in section 6 are unchanged and are now the whole of the risk.
 
 **Recommended first step:** a probe-only build — Init, `GetCapabilityParameters`,
 feature-11 support check, `--probe` JSON, exit. It touches no frames, reuses the
