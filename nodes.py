@@ -164,7 +164,14 @@ def _host_highlights(log, keep=8):
     secondary = [l for l in body
                  if l not in primary
                  and ("fail" in l.lower() or "error" in l.lower())]
-    picked = (primary + secondary) if primary else (secondary or body)
+    if primary:
+        # Never let NGX noise consume the budget: top up with secondary only
+        # once every bridge line fits, so the trailing EvaluateFeature result
+        # is always the last thing shown.
+        room = keep - len(primary)
+        picked = primary + (secondary[:room] if room > 0 else [])
+    else:
+        picked = secondary or body
     if len(picked) <= keep:
         return picked
     return picked[:keep - 2] + ["..."] + picked[-2:]
