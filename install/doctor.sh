@@ -220,6 +220,20 @@ if true; then
     fi
 fi
 
+# ------------------------------------------------- frame generation ----
+# Optional: only the DLSS 5 Frame Generation node needs these, so a missing
+# file is a warning. Failing the whole preflight over an optional feature
+# would train people to ignore the exit status.
+head_ "Frame generation (optional - only the DLSSG node uses this)"
+DLSSG_DIR="$ROOT/dlssg"
+for f in dlssg-worker.exe nvngx_dlssg.dll; do
+    if [ -s "$DLSSG_DIR/$f" ]; then ok "  $f" "$(stat -c%s "$DLSSG_DIR/$f") B"
+    else
+        warn "  $f" "not in $DLSSG_DIR"
+        hint "install/setup.sh fetches both, pinned by commit and verified by sha256."
+    fi
+done
+
 # ------------------------------------------------------------- python ----
 head_ "ComfyUI python"
 PY=${COMFYUI_PYTHON:-}

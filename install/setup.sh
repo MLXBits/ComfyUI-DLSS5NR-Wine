@@ -2,6 +2,7 @@
 # Set up the DLSS 5 NR (Wine) node on an ordinary Linux box.
 #
 #   install/setup.sh [--root DIR] [--proton-root DIR] [--proton-tag TAG]
+#                    [--no-dlssg]
 #
 # Everything here runs as your normal user. Nothing needs root, nothing is
 # installed system-wide, and no package manager is invoked: the only step that
@@ -30,11 +31,25 @@ PROTON_TAG=${PROTON_TAG:-GE-Proton11-6}
 # pixel-identical output with no error. v310.7.0 does implement it. Moving this
 # backwards will quietly disable the widget.
 DLSS_SDK_TAG=${DLSS_SDK_TAG:-v310.7.0}
+# Frame generation needs two files this project does not vendor. Neither is
+# published by NVIDIA in any public SDK repo (checked 2026-09-04: NVIDIA-RTX/
+# Streamline ships no NGX binaries at all), and no source exists for the worker
+# in either upstream. They come from Konohamaru04's node pack, which stores
+# them in Git LFS - so the pointer files hand us an exact sha256 to pin to.
+#
+# Pinned to a commit, not a branch, and every download is verified against
+# these digests before it is moved into place. A mismatch aborts that file.
+DLSSG_REPO=${DLSSG_REPO:-Konohamaru04/ComfyUI-NVIDIA-DLSS-Frame-Interpolation}
+DLSSG_COMMIT=${DLSSG_COMMIT:-2c5b661fb94a236321414300e6269441acb2d13d}
+DLSSG_WORKER_SHA256=8a747f9ed613842d5b8b34a811ad43bc1a9466540e2e5a0c8ef4005f0db9e384
+DLSSG_RUNTIME_SHA256=135eaf0733c1e37381a8c28abcf7a862404a54132b81787c04e35d09efc5e36f
+WANT_DLSSG=1
 while [ $# -gt 0 ]; do
     case $1 in
         --root)        ROOT=$2;        shift 2 ;;
         --proton-root) PROTON_ROOT=$2; shift 2 ;;
         --proton-tag)  PROTON_TAG=$2;  shift 2 ;;
+        --no-dlssg)    WANT_DLSSG=0;   shift 1 ;;
         -h|--help)     sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -211,8 +226,63 @@ else
     fi
 fi
 
-# ------------------------------------------------------------ 7. done ----
-say "7) what you must supply yourself"
+# ------------------------------------------------------- 7. frame gen ----
+say "7) frame generation (optional)"
+DLSSG_DIR="$ROOT/dlssg"
+sha256_of() {
+    if   command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum    >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+    else openssl dgst -sha256 "$1" | awk '{print $NF}'; fi
+}
+# Download to a .part and only rename once the digest matches, so an aborted or
+# tampered fetch can never leave something the node would happily execute.
+fetch_pinned() {
+    url=$1; want=$2; dest=$3; what=$4
+    curl -fL --retry 3 --no-progress-meter -o "$dest.part" "$url" || {
+        rm -f "$dest.part"; info "warning: download failed: $what"; return 1; }
+    got=$(sha256_of "$dest.part")
+    if [ "$got" != "$want" ]; then
+        rm -f "$dest.part"
+        info "REFUSED $what - sha256 mismatch, nothing installed"
+        info "  expected $want"
+        info "  got      $got"
+        return 1
+    fi
+    mv -f "$dest.part" "$dest"
+    ok "$what ($(stat -c%s "$dest") B, sha256 verified)"
+}
+if [ "$WANT_DLSSG" -eq 0 ]; then
+    info "skipped (--no-dlssg)"
+elif [ -s "$DLSSG_DIR/dlssg-worker.exe" ] && [ -s "$DLSSG_DIR/nvngx_dlssg.dll" ]; then
+    ok "already present in $DLSSG_DIR"
+else
+    mkdir -p "$DLSSG_DIR"
+    LFS="https://media.githubusercontent.com/media/$DLSSG_REPO/$DLSSG_COMMIT/bin/runtime/dlssg"
+    info "from $DLSSG_REPO @ $(printf '%.10s' "$DLSSG_COMMIT")"
+    info "third-party prebuilt binaries, pinned by commit and sha256"
+    # The runtime may already be on the machine: NVIDIA ships it in the Linux
+    # driver package, and a copy from the running driver beats a downloaded one.
+    if [ ! -s "$DLSSG_DIR/nvngx_dlssg.dll" ]; then
+        for d in /usr/lib/nvidia/wine /usr/lib/x86_64-linux-gnu/nvidia/wine \
+                 /usr/lib64/nvidia/wine /opt/nvidia/wine; do
+            [ -s "$d/nvngx_dlssg.dll" ] && {
+                cp -f "$d/nvngx_dlssg.dll" "$DLSSG_DIR/" &&
+                ok "nvngx_dlssg.dll copied from $d (matches your driver)" && break; }
+        done
+    fi
+    [ -s "$DLSSG_DIR/nvngx_dlssg.dll" ] || \
+        fetch_pinned "$LFS/nvngx_dlssg.dll" "$DLSSG_RUNTIME_SHA256" \
+                     "$DLSSG_DIR/nvngx_dlssg.dll" "nvngx_dlssg.dll"
+    # No source is published for the worker anywhere, so there is nothing to
+    # build; the pinned digest is the only assurance available for it.
+    [ -s "$DLSSG_DIR/dlssg-worker.exe" ] || \
+        fetch_pinned "$LFS/dlssg-worker.exe" "$DLSSG_WORKER_SHA256" \
+                     "$DLSSG_DIR/dlssg-worker.exe" "dlssg-worker.exe"
+    info "Frame generation is optional - the upscaler does not need either file."
+fi
+
+# ------------------------------------------------------------ 8. done ----
+say "8) what you must supply yourself"
 if [ -s "$ROOT/runtime/nvngx_dlssnr.dll" ]; then
     ok "nvngx_dlssnr.dll present ($(stat -c%s "$ROOT/runtime/nvngx_dlssnr.dll") B)"
 else

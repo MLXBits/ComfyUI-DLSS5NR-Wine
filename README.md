@@ -210,6 +210,30 @@ Input must have even dimensions.
 | `reset_each_frame` | On for batches of unrelated stills; **off for video**, or you lose temporal reuse. |
 | `channel_order` | `auto` is fine. Decided once per batch, so colour cannot flicker mid-sequence. |
 
+### Frame generation
+
+**DLSS 5 Frame Generation - Wine (Linux)** is a separate node: a different NGX
+feature, a different worker, and its own pair of files in `<root>/dlssg/`,
+fetched by `setup.sh`. It takes an `IMAGE` batch and returns a longer one, so
+it chains after the upscaler exactly the way RIFE would - and that order is the
+cheaper one, since the upscaler then only pays for your real frames.
+
+Frame count follows RIFE's convention: 2x on *n* frames gives **2n-1**, not 2n,
+because the first frame has nothing before it to interpolate from.
+
+| widget | note |
+|---|---|
+| `multiplier` | Up to 6x (5 generated frames per interval), runtime-capped. |
+| `source_fps` | Timestamps only - it does **not** resample. Set your real rate here and change fps on the save node. |
+| `detect_scene_cuts` | On by default: generated frames are dropped across a hard cut rather than smeared through it. The report counts them. |
+
+Needs at least 2 frames and even dimensions, same as the upscaler.
+
+**This node has not been verified end to end.** The Status table above covers
+feature 18 only. `dlssg.py` is a port (see
+[NOTICE-frame-interpolation.md](NOTICE-frame-interpolation.md)) and no run of
+it has been recorded here yet.
+
 ## Tuning
 
 ### Model preset - the carrier's network

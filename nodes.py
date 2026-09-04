@@ -627,7 +627,8 @@ class DLSS5NRWineInterpolate:
                 "display": ("STRING", {"default": DEFAULT_DISPLAY, "multiline": False}),
                 "source_fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
                                "tooltip": "Only used to timestamp frames for the runtime. It does "
-                                          "not resample; output is exactly multiplier x input."}),
+                                          "not resample. Set your real rate and change fps on the "
+                                          "save node; 2x on n frames gives 2n-1, like RIFE."}),
                 "detect_scene_cuts": ("BOOLEAN", {"default": True,
                                       "tooltip": "Drop generated frames across a hard cut instead "
                                                  "of interpolating through it."}),
