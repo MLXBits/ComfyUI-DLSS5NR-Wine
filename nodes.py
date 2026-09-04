@@ -405,7 +405,11 @@ class DLSS5NRWineUpscale:
             "  channel order %s   warmup=%d   reset_each_frame=%s   auto_mask=%s" % (
                 chosen, warmup_frames, reset_each_frame, auto_mask),
             "  DLSS model preset %s%s" % (model_preset,
-                "" if mp else "   <- try L or M; measured 12 points sharper"),
+                # Upstream hard-coded "try L or M, 12 points sharper" here. That
+                # holds for the carrier they measured on and not in general: the
+                # preset letters index networks inside nvngx_dlss.dll, so both
+                # the size and the sign of the effect vary by carrier build.
+                "" if mp else "   <- L/M worth an A/B; the effect is carrier-specific"),
             "  active params structure=%.2f tone=%.2f%s   (intensity/preset/style are inert here)" % (
                 structure, tone,
                 ("  skin=%.2f" % skin) if auto_mask else "  skin inactive (auto_mask=off)"),
