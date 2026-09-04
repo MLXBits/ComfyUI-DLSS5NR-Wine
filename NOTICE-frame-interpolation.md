@@ -30,14 +30,43 @@ to their respective authors and both are reproduced here.
 - NVIDIA NGX runtimes, including `nvngx_dlssg.dll`.
 - ReShade and RenoDX binaries. The frame-interpolation path does not use them.
 
-`install/setup.sh` fetches both rather than bundling them. Neither is
-published by NVIDIA in a public SDK repository - checked 2026-09-04:
-`NVIDIA-RTX/Streamline` ships no NGX binaries at all - so both come from
-Konohamaru04's node pack, which stores them in Git LFS. The LFS pointers give
-an exact `sha256`, so the download is pinned to a **commit** rather than a
-branch and every file is verified against its digest before it is moved into
-place; a mismatch installs nothing. For `nvngx_dlssg.dll` the script prefers a
-copy from your own NVIDIA driver package if it finds one, since that is
-guaranteed to match the running driver.
+`install/setup.sh` fetches both rather than bundling them, and every route
+verifies a pinned `sha256` before the file is moved into place.
 
-`--no-dlssg` skips this entirely. The upscaler does not need either file.
+### `nvngx_dlssg.dll`
+
+Shipped in NVIDIA's own **Streamline SDK** release, at `bin/x64/` (*not*
+`bin/x64/development/`, which is a different and larger debug build). The
+release asset is a 232 MB zip, but `install/zipgrab.py` pulls the single member
+over HTTP Range - **3.75 MB transferred** - so the first-party copy is the
+cheapest route as well as the most trustworthy one. Order of preference:
+
+1. your own NVIDIA driver package, if it carries the file - guaranteed to match
+   the running driver;
+2. a Streamline SDK you already have (`--streamline-sdk DIR|ZIP`), no download;
+3. NVIDIA's release zip, one member over HTTP Range;
+4. the copy in Konohamaru04's pack, as a fallback.
+
+Route 4 is byte-identical to route 3. Measured 2026-09-04: both are
+`sha256 135eaf07...`, so the community copy is NVIDIA's unmodified Streamline
+v2.12.0 release binary.
+
+**It is not vendored here, and cannot be.** The binary is not covered by
+Streamline's MIT `license.txt`; the file sitting beside it in `bin/x64/` is the
+**NVIDIA RTX SDKs License**, which governs "the DLSS SDK, NGX SDK" and grants
+distribution only "as incorporated in object code format into a software
+application" with "material additional functionality" (§1c, §2a), while §4(b)
+states plainly that you "may not distribute or sublicense the SDK as a
+stand-alone product." A bare DLL committed to a public repository is exactly
+that. §4(e) additionally forbids using it in a way that would subject it to an
+open source licence.
+
+### `dlssg-worker.exe`
+
+One source only. NVIDIA publishes no equivalent, and no source is published for
+it in either upstream repository, so there is nothing to build and nothing to
+compare against. It is an unsigned third-party binary that the node executes
+under Wine; the pinned digest proves you get the same bytes that were verified
+here, and nothing about what those bytes do.
+
+`--no-dlssg` skips this section entirely. The upscaler needs neither file.

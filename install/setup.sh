@@ -2,7 +2,7 @@
 # Set up the DLSS 5 NR (Wine) node on an ordinary Linux box.
 #
 #   install/setup.sh [--root DIR] [--proton-root DIR] [--proton-tag TAG]
-#                    [--no-dlssg]
+#                    [--no-dlssg] [--streamline-sdk DIR|ZIP]
 #
 # Everything here runs as your normal user. Nothing needs root, nothing is
 # installed system-wide, and no package manager is invoked: the only step that
@@ -43,6 +43,22 @@ DLSSG_REPO=${DLSSG_REPO:-Konohamaru04/ComfyUI-NVIDIA-DLSS-Frame-Interpolation}
 DLSSG_COMMIT=${DLSSG_COMMIT:-2c5b661fb94a236321414300e6269441acb2d13d}
 DLSSG_WORKER_SHA256=8a747f9ed613842d5b8b34a811ad43bc1a9466540e2e5a0c8ef4005f0db9e384
 DLSSG_RUNTIME_SHA256=135eaf0733c1e37381a8c28abcf7a862404a54132b81787c04e35d09efc5e36f
+DLSSG_RUNTIME_BYTES=7519856
+# nvngx_dlssg.dll ships inside NVIDIA's own Streamline SDK release. The asset is
+# a 232 MB zip, but zipgrab.py pulls a single member over HTTP Range - measured
+# 3.75 MB transferred for this one - so the first-party copy costs less than the
+# community mirror did. MEASURED 2026-09-04: the member below is byte-identical
+# (sha256 135eaf07...) to the copy in Konohamaru04's pack, so the mirror stays as
+# a fallback with no change in bytes.
+#
+# bin/x64/, NOT bin/x64/development/. The development build is a different,
+# larger binary (13,959,792 B, sha256 0d33b5de...) meant for debugging.
+STREAMLINE_TAG=${STREAMLINE_TAG:-v2.12.0}
+STREAMLINE_ZIP=${STREAMLINE_ZIP:-https://github.com/NVIDIA-RTX/Streamline/releases/download/$STREAMLINE_TAG/streamline-sdk-$STREAMLINE_TAG.zip}
+STREAMLINE_MEMBER=bin/x64/nvngx_dlssg.dll
+# Point this at an SDK you already have (extracted directory or the zip) and
+# nothing is downloaded for the runtime at all.
+STREAMLINE_SDK=${DLSS5NR_STREAMLINE_SDK:-}
 WANT_DLSSG=1
 while [ $# -gt 0 ]; do
     case $1 in
@@ -50,6 +66,7 @@ while [ $# -gt 0 ]; do
         --proton-root) PROTON_ROOT=$2; shift 2 ;;
         --proton-tag)  PROTON_TAG=$2;  shift 2 ;;
         --no-dlssg)    WANT_DLSSG=0;   shift 1 ;;
+        --streamline-sdk) STREAMLINE_SDK=$2; shift 2 ;;
         -h|--help)     sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -258,26 +275,62 @@ elif [ -s "$DLSSG_DIR/dlssg-worker.exe" ] && [ -s "$DLSSG_DIR/nvngx_dlssg.dll" ]
 else
     mkdir -p "$DLSSG_DIR"
     LFS="https://media.githubusercontent.com/media/$DLSSG_REPO/$DLSSG_COMMIT/bin/runtime/dlssg"
-    info "from $DLSSG_REPO @ $(printf '%.10s' "$DLSSG_COMMIT")"
-    info "third-party prebuilt binaries, pinned by commit and sha256"
-    # The runtime may already be on the machine: NVIDIA ships it in the Linux
-    # driver package, and a copy from the running driver beats a downloaded one.
-    if [ ! -s "$DLSSG_DIR/nvngx_dlssg.dll" ]; then
+    # Runtime, in order of preference. Every route ends at the same digest, so
+    # this is purely about who you would rather get the bytes from and how much
+    # you have to transfer to get them.
+    G="$DLSSG_DIR/nvngx_dlssg.dll"
+    # 1. Your own driver package: guaranteed to match the running driver.
+    if [ ! -s "$G" ]; then
         for d in /usr/lib/nvidia/wine /usr/lib/x86_64-linux-gnu/nvidia/wine \
                  /usr/lib64/nvidia/wine /opt/nvidia/wine; do
             [ -s "$d/nvngx_dlssg.dll" ] && {
-                cp -f "$d/nvngx_dlssg.dll" "$DLSSG_DIR/" &&
+                cp -f "$d/nvngx_dlssg.dll" "$G" &&
                 ok "nvngx_dlssg.dll copied from $d (matches your driver)" && break; }
         done
     fi
-    [ -s "$DLSSG_DIR/nvngx_dlssg.dll" ] || \
-        fetch_pinned "$LFS/nvngx_dlssg.dll" "$DLSSG_RUNTIME_SHA256" \
-                     "$DLSSG_DIR/nvngx_dlssg.dll" "nvngx_dlssg.dll"
-    # No source is published for the worker anywhere, so there is nothing to
-    # build; the pinned digest is the only assurance available for it.
-    [ -s "$DLSSG_DIR/dlssg-worker.exe" ] || \
+    # 2. A Streamline SDK you already have - nothing downloaded.
+    if [ ! -s "$G" ] && [ -n "$STREAMLINE_SDK" ]; then
+        if [ -d "$STREAMLINE_SDK" ] && [ -s "$STREAMLINE_SDK/$STREAMLINE_MEMBER" ]; then
+            cp -f "$STREAMLINE_SDK/$STREAMLINE_MEMBER" "$G" && ok "from $STREAMLINE_SDK"
+        elif [ -f "$STREAMLINE_SDK" ] && command -v unzip >/dev/null 2>&1; then
+            unzip -p "$STREAMLINE_SDK" "*$STREAMLINE_MEMBER" > "$G" 2>/dev/null ||
+                { rm -f "$G"; info "could not read $STREAMLINE_MEMBER from $STREAMLINE_SDK"; }
+            [ -s "$G" ] && ok "extracted from $STREAMLINE_SDK"
+        else
+            info "warning: --streamline-sdk $STREAMLINE_SDK has no $STREAMLINE_MEMBER"
+        fi
+        # A local copy is not automatically the right one; check it like a download.
+        if [ -s "$G" ] && [ "$(sha256_of "$G")" != "$DLSSG_RUNTIME_SHA256" ]; then
+            info "warning: that copy is not $STREAMLINE_TAG bin/x64 (digest differs);"
+            info "         keeping it anyway - pass --no-dlssg if that is wrong"
+        fi
+    fi
+    # 3. NVIDIA's release zip, one member over HTTP Range: ~3.75 MB, not 232.
+    if [ ! -s "$G" ]; then
+        info "fetching $STREAMLINE_MEMBER from NVIDIA Streamline $STREAMLINE_TAG"
+        python3 "$HERE/zipgrab.py" "$STREAMLINE_ZIP" "$STREAMLINE_MEMBER" \
+                "$G.part" "$DLSSG_RUNTIME_BYTES" >/dev/null 2>&1 || rm -f "$G.part"
+        if [ -s "$G.part" ] && [ "$(sha256_of "$G.part")" = "$DLSSG_RUNTIME_SHA256" ]; then
+            mv -f "$G.part" "$G"
+            ok "nvngx_dlssg.dll ($(stat -c%s "$G") B, from NVIDIA, sha256 verified)"
+        else
+            rm -f "$G.part"
+            info "NVIDIA route unavailable; falling back to the mirror"
+        fi
+    fi
+    # 4. The community mirror. Same bytes, measured.
+    [ -s "$G" ] || fetch_pinned "$LFS/nvngx_dlssg.dll" "$DLSSG_RUNTIME_SHA256" \
+                                "$G" "nvngx_dlssg.dll"
+    # The worker has exactly one source: no NVIDIA equivalent exists and no
+    # source is published for it anywhere, so there is nothing to build and the
+    # pinned digest is the only assurance available. It is an unsigned
+    # third-party binary that this node then runs under Wine.
+    if [ ! -s "$DLSSG_DIR/dlssg-worker.exe" ]; then
+        info "dlssg-worker.exe: third-party, from $DLSSG_REPO"
+        info "  @ $(printf '%.10s' "$DLSSG_COMMIT"), pinned by commit and sha256"
         fetch_pinned "$LFS/dlssg-worker.exe" "$DLSSG_WORKER_SHA256" \
                      "$DLSSG_DIR/dlssg-worker.exe" "dlssg-worker.exe"
+    fi
     info "Frame generation is optional - the upscaler does not need either file."
 fi
 
