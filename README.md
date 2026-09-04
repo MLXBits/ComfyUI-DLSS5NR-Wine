@@ -59,7 +59,7 @@ git clone https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine
 
 ```bash
 bash ComfyUI-DLSS5NR-Wine/install/build_native.sh          # clone 上游 + MinGW 交叉编译
-# 或者从本仓库 Releases 下预编好的 dist.tar.gz 解到 /workspace/dlss5nr/native/bin/
+# 或者从本仓库 Releases 下预编好的 dlss5nr-native-mingw-x64.tar.gz 解到 /workspace/dlss5nr/（内含 native/bin/ 与 runtime/caller/）
 ```
 
 ### 3. Wine prefix + 虚拟显示
