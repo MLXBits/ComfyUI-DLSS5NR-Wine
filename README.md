@@ -2,6 +2,18 @@
 
 **NVIDIA DLSS 5 Neural Rendering (NGX feature 18) as a ComfyUI node on Linux.**
 
+> A fork of **[LQCCS/ComfyUI-DLSS5NR-Wine](https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine)**,
+> which did the hard part: proving feature 18 can be driven from ComfyUI on
+> Linux at all, finding the nine things that stop it, and cross-compiling
+> kos94ok's host with MinGW-w64. **Read that repo first** - its
+> [docs/FINDINGS.md](https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine/blob/main/docs/FINDINGS.md)
+> is the primary source for everything here, and it is where new discoveries
+> should land.
+>
+> This fork adds English documentation and UI, an installer that does not
+> assume a root vast.ai container, and a read-only preflight. It is a
+> packaging fork, not a better implementation.
+
 An IMAGE batch goes in, feature 18 runs over it, an IMAGE batch comes out. The
 whole batch shares one persistent NGX session, so temporal state carries across
 frames.
@@ -171,8 +183,9 @@ Upstream's bridge never sets `DLSS.Hint.Render.Preset.*`, so the SR carrier
 runs on whatever the driver defaults to. The bundled bridge is patched to honour
 `DLSS5NR_MODEL_PRESET`, exposed as the `model_preset` widget.
 
-Measured on machine A (RTX 5090, driver 590.48.01, 736x1280 source at 1.724x,
-`structure=2.0`, high-frequency energy vs Lanczos):
+Measured by [LQCCS](https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine) on machine A
+(RTX 5090, driver 590.48.01, 736x1280 source at 1.724x, `structure=2.0`,
+high-frequency energy vs Lanczos):
 
 | model_preset | HF energy | vs Lanczos |
 |---|---:|---:|
@@ -267,5 +280,14 @@ Run `install/doctor.sh` first; it explains most of these in place.
 - `nvngx_dlssnr.dll` and other NVIDIA NGX runtimes are **proprietary, not in
   this repository**, and are yours to obtain legally.
 
-Forked from [LQCCS/ComfyUI-DLSS5NR-Wine](https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine),
-whose measurements on machine A are reproduced above.
+### Upstream
+
+[**LQCCS/ComfyUI-DLSS5NR-Wine**](https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine)
+is the original and the place to look for the reasoning behind any of this. The
+node design, the Wine transport work, the environment findings, and every
+measurement labelled "machine A" above are theirs. Bug reports about the
+*technique* belong there; this fork only owns its packaging and docs.
+
+The binaries come in turn from
+[kos94ok/ComfyUI-DLSS5-NR-Linux](https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux),
+which owns the D3D12/NGX bridge itself.
