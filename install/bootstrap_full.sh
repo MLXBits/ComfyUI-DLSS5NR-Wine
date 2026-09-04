@@ -102,11 +102,52 @@ else
         bad "GE-Proton 下载字节不符 got=$got want=$PROTON_BYTES"
     fi
 fi
-if [ -x "$WINE" ] && [ ! -d "$PFX/drive_c" ]; then
-    echo "   建 prefix…"
-    mkdir -p "$PFX"
-    WINEPREFIX="$PFX" WINEARCH=win64 WINEDEBUG=-all timeout 300 "$WINE" wineboot -u >/dev/null 2>&1 || true
-    sleep 3
+# 🔴 prefix **必须由 Proton 自己建**，不能用裸 wineboot。
+#    2026-09-04 在 49837537 上踩：用 `wine64 wineboot -u` 建出来的是最小 prefix，
+#    system32 里没有 DXVK 的 dxgi/d3d11、没有 dxvk-nvapi 的 nvapi64/nvofapi64。
+#    后果是一路静默降级：
+#      · 先是 LoadLibrary(dlss5nr_bridge.dll) failed: 126（ERROR_MOD_NOT_FOUND，
+#        因为它依赖的 dxgi 是 Wine 内建的 718854 B 版本，不是 DXVK 的 4435982 B）
+#      · 手工补上 dxgi/d3d11 之后又变成 NvAPI_EnumPhysicalGPUs failed with error: -2
+#        (NVAPI_LIBRARY_NOT_FOUND)，NGX 认不出显卡 -> Init_ProjectID 返回 0xBAD00001。
+#        +loaddll 证实 nvapi64.dll **从头到尾没被加载过**。
+#    Proton 的 `proton run` 会把 DXVK / vkd3d-proton / dxvk-nvapi 一整套按它自己的
+#    版本矩阵装进 prefix —— 这是能跑的那台（49812079）当初的建法。照抄它。
+#
+#    Proton 要 STEAM_COMPAT_CLIENT_INSTALL_PATH（缺了直接 KeyError），
+#    prefix 落在 $STEAM_COMPAT_DATA_PATH/pfx。
+if [ -x "$WINE" ] && [ ! -f "$PFX/drive_c/windows/system32/nvapi64.dll" ]; then
+    echo "   用 Proton 建 prefix（不是 wineboot —— 见上面注释）…"
+    mkdir -p /root/.steam/root "${XDG_RUNTIME_DIR:-/tmp/xdg}" 2>/dev/null || true
+    PROTON_BIN="$PROTON_ROOT/$PROTON_TAG/proton"
+    if [ -x "$PROTON_BIN" ]; then
+        STEAM_COMPAT_CLIENT_INSTALL_PATH=/root/.steam/root         STEAM_COMPAT_DATA_PATH="$PROTON_ROOT/prefix"         XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg}"         PROTON_DISABLE_XALIA=1 WINEDEBUG=-all DISPLAY=:99             timeout 600 "$PROTON_BIN" run wineboot -u >/dev/null 2>&1 || true
+        sleep 3
+    else
+        echo "   ✗ 找不到 $PROTON_BIN，退回 wineboot（prefix 会不完整）"
+        mkdir -p "$PFX"
+        WINEPREFIX="$PFX" WINEARCH=win64 WINEDEBUG=-all timeout 300 "$WINE" wineboot -u >/dev/null 2>&1 || true
+    fi
+fi
+# Proton 建完之后校验那几个关键 DLL 的**大小**——大小不对就说明拿到的是 Wine 内建版。
+if [ -d "$PFX/drive_c" ]; then
+    S0="$PFX/drive_c/windows/system32"
+    for chk in "dxgi.dll:2000000" "d3d11.dll:2000000" "nvapi64.dll:500000" "d3d12core.dll:2000000"; do
+        f=${chk%%:*}; min=${chk##*:}
+        sz=$(stat -c%s "$S0/$f" 2>/dev/null || echo 0)
+        if [ "$sz" -lt "$min" ]; then
+            echo "   ⚠️ $f 只有 $sz B（<$min）—— 像是 Wine 内建而不是 DXVK/vkd3d/nvapi，从 GE-Proton 树补"
+            for sub in dxvk vkd3d-proton nvapi; do
+                src="$PROTON_ROOT/$PROTON_TAG/files/lib/wine/$sub/x86_64-windows/$f"
+                [ -s "$src" ] && { cp -f "$src" "$S0/$f"; echo "      <- $sub ($(stat -c%s "$S0/$f") B)"; break; }
+            done
+        fi
+    done
+    # nvofapi64 是 dxvk-nvapi 的另一半，能跑的那台有、裸 prefix 没有
+    [ -s "$S0/nvofapi64.dll" ] || {
+        src="$PROTON_ROOT/$PROTON_TAG/files/lib/wine/nvapi/x86_64-windows/nvofapi64.dll"
+        [ -s "$src" ] && cp -f "$src" "$S0/" && echo "   补 nvofapi64.dll"
+    }
 fi
 [ -d "$PFX/drive_c" ] && ok "prefix $PFX" || bad "prefix 没建出来"
 
