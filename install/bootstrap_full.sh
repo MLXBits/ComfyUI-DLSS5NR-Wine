@@ -118,7 +118,11 @@ fi
 #    prefix 落在 $STEAM_COMPAT_DATA_PATH/pfx。
 if [ -x "$WINE" ] && [ ! -f "$PFX/drive_c/windows/system32/nvapi64.dll" ]; then
     echo "   用 Proton 建 prefix（不是 wineboot —— 见上面注释）…"
-    mkdir -p /root/.steam/root "${XDG_RUNTIME_DIR:-/tmp/xdg}" 2>/dev/null || true
+    # Proton 只在 STEAM_COMPAT_DATA_PATH **已存在**时才work：它在里面建 pfx.lock，
+    # 但不会创建这个父目录。目录不在就抛
+    #   FileNotFoundError: .../prefix/pfx.lock
+    mkdir -p /root/.steam/root "${XDG_RUNTIME_DIR:-/tmp/xdg}" "$PROTON_ROOT/prefix" 2>/dev/null || true
+    chmod 700 "${XDG_RUNTIME_DIR:-/tmp/xdg}" 2>/dev/null || true
     PROTON_BIN="$PROTON_ROOT/$PROTON_TAG/proton"
     if [ -x "$PROTON_BIN" ]; then
         STEAM_COMPAT_CLIENT_INSTALL_PATH=/root/.steam/root         STEAM_COMPAT_DATA_PATH="$PROTON_ROOT/prefix"         XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg}"         PROTON_DISABLE_XALIA=1 WINEDEBUG=-all DISPLAY=:99             timeout 600 "$PROTON_BIN" run wineboot -u >/dev/null 2>&1 || true
