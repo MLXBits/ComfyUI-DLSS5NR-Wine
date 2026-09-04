@@ -51,6 +51,21 @@ LIBS="-ld3d12 -ldxgi -ldxguid -luuid -lole32"
 # shim 必须落在 runtime/caller/，前端按这个路径找
 cp -f "$ROOT/native/bin/nvngx.dll_comfy.dll" "$ROOT/runtime/caller/"
 
+# dlssg_host is OURS, not upstream's - it lives in this repo, not in $ROOT.
+# Probe-only for now; see docs/DLSSG-HOST.md. It is built into the dlssg
+# directory the frame-generation node already points at.
+if [ -f "$HERE/../native/dlssg_host.cpp" ]; then
+    echo "== 3.5) dlssg_host (probe-only, project-owned)"
+    mkdir -p "$ROOT/dlssg"
+    if "$CXX" $FLAGS -municode "$HERE/../native/dlssg_host.cpp" \
+            -o "$ROOT/dlssg/dlssg_host.exe" $LIBS; then
+        printf '   %10s  %s\n' "$(stat -c%s "$ROOT/dlssg/dlssg_host.exe")" "$ROOT/dlssg/dlssg_host.exe"
+        echo "   probe it:  wine $ROOT/dlssg/dlssg_host.exe --probe"
+    else
+        echo "   ⚠️  dlssg_host failed to build - the upscaler is unaffected"
+    fi
+fi
+
 echo "== 4) 产物"
 for f in "$ROOT/native/bin/dlss5nr_host.exe" \
          "$ROOT/native/bin/dlss5nr_bridge.dll" \

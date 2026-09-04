@@ -238,6 +238,35 @@ The first milestone is cheap and decisive. If feature 11 creates and evaluates
 under Wine with our own host, the rest is tuning against an oracle we already
 have. If it does not, we learn that early and have lost two days.
 
+### Status
+
+`native/dlssg_host.cpp` is the probe, written and wired into
+`install/build_native.sh` (step 3.5, output `<root>/dlssg/dlssg_host.exe`).
+**It has never been compiled** — there is no MinGW cross-compiler on the
+machine it was written on, and it has to run on the box with the GPU and the
+Wine prefix regardless. First run:
+
+```bash
+git pull && install/build_native.sh          # builds it alongside the other three
+wine <root>/dlssg/dlssg_host.exe --probe     # or: DLSS5NR_DLSSG_DIR=... wine ...
+```
+
+Expect to fix compile errors on that first pass. What the probe reports:
+
+```json
+{"available":true,"multi_frame_count_max":3,"worker_version":"probe-1",
+ "gpu":"NVIDIA GeForce RTX 5090","detail":"feature 11 available on ..."}
+```
+
+with the NGX conversation on stderr — `Init_ProjectID -> 0x…`,
+`FrameGeneration.Available -> …`, and on failure the
+`FrameGeneration.FeatureInitResult` code, which is the single most useful
+number when the answer is no.
+
+The reference worker's own `--probe` is the control: run both, compare. If it
+says available and ours does not, the difference is in our init, not in the
+stack.
+
 **Recommended first step:** a probe-only build — Init, `GetCapabilityParameters`,
 feature-11 support check, `--probe` JSON, exit. It touches no frames, reuses the
 bridge's NGX loader verbatim, and answers the only question that could sink the
