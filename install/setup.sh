@@ -104,7 +104,7 @@ else
     mkdir -p "$PROTON_ROOT"
     url="https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$PROTON_TAG/$PROTON_TAG.tar.gz"
     info "downloading $PROTON_TAG (~500 MB)"
-    curl -fL --retry 3 -o "$PROTON_ROOT/proton.tgz" "$url" || die "download failed: $url"
+    curl -fL --retry 3 --no-progress-meter -o "$PROTON_ROOT/proton.tgz" "$url" || die "download failed: $url"
     tar xzf "$PROTON_ROOT/proton.tgz" -C "$PROTON_ROOT" || die "extract failed"
     rm -f "$PROTON_ROOT/proton.tgz"
     for c in "$PROTON_ROOT/$PROTON_TAG"*/files/bin/wine; do
@@ -188,7 +188,7 @@ else
     # Redistributable and published by NVIDIA. No third-party repack needed.
     url="https://raw.githubusercontent.com/NVIDIA/DLSS/$DLSS_SDK_TAG/lib/Windows_x86_64/rel/nvngx_dlss.dll"
     info "fetching from NVIDIA's public SDK ($DLSS_SDK_TAG)"
-    curl -fL --retry 3 -o "$ROOT/runtime/nvngx_dlss.dll" "$url" \
+    curl -fL --retry 3 --no-progress-meter -o "$ROOT/runtime/nvngx_dlss.dll" "$url" \
         && ok "$(stat -c%s "$ROOT/runtime/nvngx_dlss.dll") B" \
         || info "warning: download failed; scales above 1x will not work"
 fi

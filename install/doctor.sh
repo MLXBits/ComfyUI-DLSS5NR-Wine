@@ -153,8 +153,12 @@ head_ "Project tree and NVIDIA runtimes"
 if [ -z "$ROOT" ]; then
     for c in "$HOME/dlss5nr" /workspace/dlss5nr; do [ -d "$c" ] && { ROOT=$c; break; }; done
 fi
-if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then
-    ok "root" "$ROOT"
+# Report the root but never short-circuit on it: someone pointing --root at a
+# directory they have not created yet still wants the full list of what goes in
+# it, not a single "not found" line.
+[ -n "$ROOT" ] || ROOT="$HOME/dlss5nr"
+if [ -d "$ROOT" ]; then ok "root" "$ROOT"; else bad "root" "$ROOT does not exist yet"; fi
+if true; then
     [ -f "$ROOT/tools/dlss5nr_video.py" ] && ok "  upstream tree" "tools/dlss5nr_video.py" || {
         bad "  upstream tree" "tools/dlss5nr_video.py missing"
         hint "git clone https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux $ROOT"
@@ -185,9 +189,6 @@ if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then
         hint "  curl -Lo $ROOT/runtime/nvngx_dlss.dll \\"
         hint "    https://raw.githubusercontent.com/NVIDIA/DLSS/v310.7.0/lib/Windows_x86_64/rel/nvngx_dlss.dll"
     fi
-else
-    bad "root" "not found"
-    hint "Pick a directory and pass --root, or set DLSS5NR_ROOT."
 fi
 
 # ------------------------------------------------------------- python ----
