@@ -1,22 +1,26 @@
 # -*- coding: utf-8 -*-
-"""DLSS 5 Neural Rendering（feature 18）· Wine 路径 · ComfyUI 节点
+"""DLSS 5 Neural Rendering (feature 18) - Wine path - ComfyUI node
 
-为什么另起一个节点包，而不是修 ComfyUI-DonutNodes：
-  DonutNodes 的 DLSS5 分支走 Merserk worker + ReShade + renodx-dlss5.addon64。
-  那条路在 Wine 下必崩：feature 18 create 之后 addon 静默 abort。
-  一手依据 NIGos/dlss5-bridge#22（同一个 addon 构建 sha256 D5ADF82E…，
-  同为 Blackwell + vkd3d-proton，对方用参考版 nvngx_dlssnr 也一样崩），
-  issue 至今 open，维护者没有 Linux 环境无法复现。
+Why a separate node pack rather than patching ComfyUI-DonutNodes:
+  DonutNodes' DLSS5 branch goes through the Merserk worker + ReShade +
+  renodx-dlss5.addon64. That route always crashes under Wine: the add-on
+  aborts silently right after feature 18 is created. First-hand evidence in
+  NIGos/dlss5-bridge#22 (identical add-on build, sha256 D5ADF82E...; also
+  Blackwell + vkd3d-proton; the reporter crashed the same way using the
+  reference nvngx_dlssnr). That issue is still open - the maintainer has no
+  Linux environment and cannot reproduce it.
 
-  本节点走 kos94ok/ComfyUI-DLSS5-NR-Linux 的 host：它自己持有 D3D12/NGX 会话，
-  **完全不加载 ReShade / RenoDX**，所以那个 bug 不在路径上。2026-09-04 在
-  49812079（RTX 5090 / 驱动 590.48.01）实测：1.0x 改变像素（平均绝对差
-  28.049/255）、2× 480x736→960x1472、1.5× →720x1104，host 的
-  CreateFeature(18) failed / DLSSNR EvaluateFeature failed 两条错误路径均未触发。
-  吞吐 8.72 帧/秒（2×），15s@24fps 约 41 秒。
+  This node uses the host from kos94ok/ComfyUI-DLSS5-NR-Linux instead. It owns
+  its own D3D12/NGX session and loads neither ReShade nor RenoDX, so that bug
+  is not on the path. Measured 2026-09-04 on 49812079 (RTX 5090, driver
+  590.48.01): 1.0x changes pixels (mean abs diff 28.049/255); 2x 480x736 ->
+  960x1472; 1.5x -> 720x1104; neither of the host's CreateFeature(18) failed
+  nor DLSSNR EvaluateFeature failed paths was hit. Throughput 8.72 fps at 2x,
+  so 15s at 24fps takes about 41 seconds.
 
-协议原语直接 import 上游的 tools/dlss5nr_video.py，不复制粘贴 ——
-上游改协议时我们跟着走，不会悄悄对不上。
+Protocol primitives are imported directly from the upstream
+tools/dlss5nr_video.py rather than copy-pasted, so a protocol change upstream
+carries over instead of silently drifting out of sync.
 """
 
 from __future__ import annotations
@@ -49,7 +53,7 @@ DEFAULT_DISPLAY = os.environ.get("DLSS5NR_DISPLAY", ":99")
 SCALE_CHOICES = {
     # ⚠️ 1.0x 没有 carrier，feature 18 直接作用在已经清晰的原片上会把它磨软
     #    （实测 -3.9%）。feature 18 是给「放大后变软的画面」补结构的，别用 1.0x 求清晰。
-    "1.0x (DLAA / 原尺寸·会变软，别用来求清晰)": 1.0,
+    "1.0x (DLAA / native - softens, not for sharpening)": 1.0,
     "1.5x (Quality)": 1.5,
     "1.724x (Balanced)": 1.724,
     "2.0x (Performance)": 2.0,
@@ -66,8 +70,8 @@ STYLE_CHOICES = {"Default": 0, "Natural": 1, "Cinematic": 2}
 #    实现方式：给 nvngx_dlss.dll 的六个 DLSS.Hint.Render.Preset.* 键统一写入该值
 #    （键名从 DLL 字符串表确认），做法沿用 Merserk v4.0 changelog 的描述。
 #    需要打过补丁的 dlss5nr_bridge.dll（读环境变量 DLSS5NR_MODEL_PRESET）。
-MODEL_PRESETS = {"Default (驱动默认·实测=K)": 0, "J (10)": 10, "K (11)": 11,
-                 "L (12) 锐": 12, "M (13) 最锐": 13}
+MODEL_PRESETS = {"Default (driver default - measured as K)": 0, "J (10)": 10, "K (11)": 11,
+                 "L (12) sharp": 12, "M (13) sharpest": 13}
 
 # 🔴 哪些参数真的起作用（2026-09-04 实测 + 一手来源）
 #
@@ -100,12 +104,35 @@ class Dlss5NRWineError(RuntimeError):
     pass
 
 
+def _resolve_choice(value, table, what):
+    """Look a widget value up in its choice table, falling back to the leading token.
+
+    Saved workflows store the choice *label*, so any relabelling - localising
+    these from Chinese to English included - would orphan existing graphs. The
+    leading token ("1.0x", "M", "Default") is the stable part, so match on that
+    when the full label misses.
+
+    This matters most for model_preset, which previously went through
+    ``MODEL_PRESETS.get(value, 0)``: an unrecognised label silently resolved to
+    the driver default, quietly disabling the single biggest sharpness lever
+    with no error anywhere.
+    """
+    if value in table:
+        return table[value]
+    head = str(value).split(" ")[0]
+    for key, resolved in table.items():
+        if key.split(" ")[0] == head:
+            return resolved
+    raise Dlss5NRWineError(
+        "Unknown %s %r; expected one of: %s" % (what, value, list(table)))
+
+
 def _load_upstream(repo: Path):
-    """把上游前端当模块加载，借它的协议常量与时域向导。"""
+    """Load the upstream frontend as a module for its protocol constants and temporal guide."""
     tool = repo / "tools" / "dlss5nr_video.py"
     if not tool.is_file():
         raise Dlss5NRWineError(
-            "找不到 %s。先 git clone https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux %s"
+            "Not found: %s. Run git clone https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux %s first"
             % (tool, repo)
         )
     spec = importlib.util.spec_from_file_location("_dlss5nr_video", tool)
@@ -120,12 +147,12 @@ def _even(v: float) -> int:
 
 
 def _host_highlights(log, keep=8):
-    """挑出 host stderr 里有诊断价值的几行。
+    """Pick the diagnostically useful lines out of the host's stderr.
 
-    NGX 每次会话结束都会刷几十行 CollectGarbage / Releasing resource，
-    直接取 log[-6:] 只会看到这些拆卸噪声。真正想看的（host banner、
-    Init_ProjectID 结果、carrier 状态、被强制的模型预设、任何失败）
-    都在最前面。
+    NGX floods stderr with dozens of CollectGarbage / Releasing-resource lines
+    at the end of every session, so a plain log[-6:] shows nothing but teardown
+    noise. What you actually want - the host banner, the Init_ProjectID result,
+    carrier state, the forced model preset, any failure - is all near the top.
     """
     noise = ("CollectGarbage", "Releasing resource", "Delayed destroy")
     body = [l for l in log if not any(n in l for n in noise)]
@@ -151,7 +178,7 @@ def _drain(stream, sink, cap=400):
 
 
 class DLSS5NRWineUpscale:
-    """IMAGE 批 -> DLSS 5 神经渲染 -> IMAGE 批。整批共用一个持久 NGX 会话。"""
+    """IMAGE batch -> DLSS 5 Neural Rendering -> IMAGE batch. One persistent NGX session per batch."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -159,28 +186,28 @@ class DLSS5NRWineUpscale:
             "required": {
                 "image": ("IMAGE",),
                 "scale": (list(SCALE_CHOICES), {"default": "1.724x (Balanced)",
-                          "tooltip": "求清晰必须 >1x。1.0x 档没有 carrier，只会变软"}),
+                          "tooltip": "Sharpening requires >1x. The 1.0x tier has no carrier and only softens the image."}),
                 "repo_dir": ("STRING", {"default": DEFAULT_REPO, "multiline": False}),
                 "wine": ("STRING", {"default": DEFAULT_WINE, "multiline": False}),
                 "prefix": ("STRING", {"default": DEFAULT_PFX, "multiline": False}),
                 "display": ("STRING", {"default": DEFAULT_DISPLAY, "multiline": False,
-                                       "tooltip": "必填。去掉 DISPLAY 后 DXVK 连 Vulkan instance 都建不出来（实测）。"}),
+                                       "tooltip": "Required. Without DISPLAY, DXVK cannot even create a Vulkan instance (measured)."}),
                 "warmup_frames": ("INT", {"default": 8, "min": 0, "max": 600}),
-                "style": (list(STYLE_CHOICES), {"tooltip": "❌ 无效：出厂 DLL 只含单一网络，没有可切换对象"}),
+                "style": (list(STYLE_CHOICES), {"tooltip": "INERT: the shipping DLL contains a single network, so there is nothing to switch."}),
                 "preset": ("INT", {"default": 0, "min": 0, "max": 7,
-                                   "tooltip": "❌ 无效，同 style"}),
+                                   "tooltip": "INERT, same as style."}),
                 "intensity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                                        "tooltip": "❌ 本路径无效（实测改它输出逐字节不变）。NVIDIA SDK 里没有独立 intensity"}),
+                                        "tooltip": "INERT on this path (measured: changing it leaves output byte-identical). The NVIDIA SDK has no separate intensity control."}),
                 "tone": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
-                                   "tooltip": "低频：整体光照与色彩响应。0 = 完全保留原片配色"}),
+                                   "tooltip": "Low frequency: overall lighting and colour response. 0 = keep the source grade exactly."}),
                 "structure": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 4.0, "step": 0.05,
-                                        "tooltip": "✅ 唯一真正的清晰度杠杆。NVIDIA SDK 0-1、Merserk UI 0-2；实测 3.0=+9.7% 4.0=+12.8% 仍在起效但超出文档。人脸 1.5-2.0，产品/环境 2.0-3.0"}),
+                                        "tooltip": "The only real sharpness lever. NVIDIA SDK documents 0-1, Merserk's UI allows 0-2; measured 3.0=+9.7% and 4.0=+12.8%, still effective but beyond any documentation. Faces 1.5-2.0, products/environments 2.0-3.0."}),
                 "skin": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0, "step": 0.05,
-                                   "tooltip": "-1 = 跟随 structure。⚠️ 只有 auto_mask 开启时才有效果"}),
+                                   "tooltip": "-1 = follow structure. Only has any effect when auto_mask is on."}),
                 "auto_mask": ("BOOLEAN", {"default": False,
-                                          "tooltip": "⚠️ 想要清晰就关掉。实测开启把 +1.9% 压回 -0.4%（相对 Lanczos）。画面里皮肤占比越大，它抑制得越多"}),
+                                          "tooltip": "Turn this off if you want sharpness. Measured: enabling it pushed +1.9% back to -0.4% against Lanczos. The more skin fills the frame, the more it suppresses."}),
                 "reset_each_frame": ("BOOLEAN", {"default": False,
-                                                 "tooltip": "关掉时域复用。静态图批量走这个，视频不要开。"}),
+                                                 "tooltip": "Disables temporal reuse. Use for batches of unrelated stills; leave off for video."}),
                 "channel_order": (["auto", "RGBA", "BGRA"],),
                 "gpu_index": ("INT", {"default": 0, "min": 0, "max": 7}),
                 # 🔴 新参数一律加在**最后**，绝不插中间。
@@ -189,8 +216,8 @@ class DLSS5NRWineUpscale:
                 #    （model_preset 缺少连接 / warmup_frames、preset、gpu_index 类型错误 /
                 #     style、channel_order 值不适用）。加在末尾则老工作流缺最后一个值，
                 #    ComfyUI 自动取 default，完全兼容。
-                "model_preset": (list(MODEL_PRESETS), {"default": "M (13) 最锐",
-                                  "tooltip": "🔴 清晰度最大杠杆。实测 L/M 比默认(K)高 12 个百分点。需要打过补丁的 bridge；未打补丁时此项无效果"}),
+                "model_preset": (list(MODEL_PRESETS), {"default": "M (13) sharpest",
+                                  "tooltip": "Biggest sharpness lever. Measured: L/M scored 12 points above the default (K). Requires a patched bridge; without the patch this widget does nothing."}),
             }
         }
 
@@ -202,48 +229,38 @@ class DLSS5NRWineUpscale:
     def upscale(self, image, scale, repo_dir, wine, prefix, display, warmup_frames,
                 style, preset, intensity, tone, structure, skin, auto_mask,
                 reset_each_frame, channel_order, gpu_index,
-                model_preset="M (13) 最锐"):
+                model_preset="M (13) sharpest"):
         repo = Path(repo_dir).expanduser().resolve()
         V = _load_upstream(repo)
 
         host = repo / "native" / "bin" / "dlss5nr_host.exe"
         runtime = repo / "runtime"
         shim = runtime / "caller" / "nvngx.dll_comfy.dll"
-        for p, what in ((host, "dlss5nr_host.exe（用 native/build_host_mingw.sh 编）"),
-                        (runtime / "nvngx_dlssnr.dll", "nvngx_dlssnr.dll（自备）"),
+        for p, what in ((host, "dlss5nr_host.exe (build it with native/build_host_mingw.sh)"),
+                        (runtime / "nvngx_dlssnr.dll", "nvngx_dlssnr.dll (supply your own)"),
                         (shim, "caller shim nvngx.dll_comfy.dll")):
             if not p.is_file():
-                raise Dlss5NRWineError("缺 %s：%s" % (what, p))
+                raise Dlss5NRWineError("Missing %s: %s" % (what, p))
         bridge = repo / "native" / "bin" / "dlss5nr_bridge.dll"
         if not bridge.is_file():
-            raise Dlss5NRWineError("缺 dlss5nr_bridge.dll：%s" % bridge)
+            raise Dlss5NRWineError("Missing dlss5nr_bridge.dll: %s" % bridge)
 
-        # 旧工作流可能存着改名前的档位字符串（例如 1.0x 那条加了警告后名字变了），
-        # 按前缀回退匹配，别让老文件直接报 KeyError。
-        if scale in SCALE_CHOICES:
-            factor = SCALE_CHOICES[scale]
-        else:
-            head = scale.split(' ')[0]
-            hit = [v for k, v in SCALE_CHOICES.items() if k.split(' ')[0] == head]
-            if not hit:
-                raise Dlss5NRWineError(
-                    "未知放大档 %r，可选：%s" % (scale, list(SCALE_CHOICES)))
-            factor = hit[0]
+        factor = _resolve_choice(scale, SCALE_CHOICES, "scale")
         img = image.detach().cpu().float().clamp(0.0, 1.0).numpy()
         if img.ndim != 4 or img.shape[-1] < 3:
-            raise Dlss5NRWineError("IMAGE 形状不对：%s" % (tuple(img.shape),))
+            raise Dlss5NRWineError("Bad IMAGE shape: %s" % (tuple(img.shape),))
         img = np.ascontiguousarray(img[..., :3])
         n, in_h, in_w = img.shape[0], img.shape[1], img.shape[2]
         if in_w % 2 or in_h % 2:
             raise Dlss5NRWineError(
-                "输入必须是偶数尺寸，当前 %dx%d。H3 出片是偶数，若在中间裁过请对齐到 2 的倍数。"
+                "Input must have even dimensions, got %dx%d. H3 output is even; if you cropped in between, align to a multiple of 2."
                 % (in_w, in_h))
         out_w, out_h = (_even(in_w * factor), _even(in_h * factor)) if factor != 1.0 else (in_w, in_h)
         # 让上游自己校验倍率合法性，不自己另起一套判断
         perf_quality = V._perf_quality_for_size(in_w, in_h, out_w, out_h)
         if factor > 1.0 and not (runtime / "nvngx_dlss.dll").is_file():
             raise Dlss5NRWineError(
-                "倍率 >1x 需要普通 DLSS carrier：把 nvngx_dlss.dll 放进 %s" % runtime)
+                "Factors above 1x need the ordinary DLSS carrier: put nvngx_dlss.dll in %s" % runtime)
 
         env = os.environ.copy()
         env["DISPLAY"] = display
@@ -256,7 +273,7 @@ class DLSS5NRWineUpscale:
         # 只用 builtin(=n) 会让 NGX 起来但 NvAPI 看不到物理显卡 —— 上游注释与我们实测一致
         env.setdefault("WINEDLLOVERRIDES", "d3d12,d3d12core,nvapi64,dxgi=n,b")
         env.setdefault("WINEDEBUG", "-all")
-        mp = MODEL_PRESETS.get(model_preset, 0)
+        mp = _resolve_choice(model_preset, MODEL_PRESETS, "model_preset")
         if mp:
             env["DLSS5NR_MODEL_PRESET"] = str(mp)
         else:
@@ -302,7 +319,7 @@ class DLSS5NRWineUpscale:
                 u8 = np.ascontiguousarray(np.rint(src * 255.0).astype(np.uint8))
                 motion, guide_reset = guides.process(u8)
                 if motion.nbytes != motion_bytes:
-                    fail("第 %d 帧运动向量 %d 字节，应为 %d" % (i, motion.nbytes, motion_bytes))
+                    fail("Frame %d: motion vectors are %d bytes, expected %d" % (i, motion.nbytes, motion_bytes))
                 reset = bool(reset_each_frame or guide_reset)
                 proc.stdin.write(V.FRAME_HEADER.pack(V.MAGIC_FRM2, i, 1 if reset else 0))
                 proc.stdin.write(src.tobytes(order="C"))
@@ -313,18 +330,18 @@ class DLSS5NRWineUpscale:
                     magic, idx, ok, count = V.REPLY_HEADER.unpack(
                         V._read_exact(proc.stdout, V.REPLY_HEADER.size))
                 except Exception as e:
-                    fail("第 %d 帧读回复失败：%s" % (i, e))
+                    fail("Frame %d: failed to read the reply: %s" % (i, e))
                 if magic != V.MAGIC_OUT1 or idx != i:
-                    fail("第 %d 帧回复错乱：magic=%r index=%d" % (i, magic, idx))
+                    fail("Frame %d: desynchronised reply: magic=%r index=%d" % (i, magic, idx))
                 if not ok:
                     try:
                         ln = struct.unpack("<I", V._read_exact(proc.stdout, 4))[0]
                         detail = V._read_exact(proc.stdout, min(ln, 65535)).decode("utf-8", "replace")
                     except Exception:
-                        detail = "(读不到详情)"
-                    fail("第 %d 帧 host 报错：%s" % (i, detail))
+                        detail = "(no detail available)"
+                    fail("Frame %d: host reported an error: %s" % (i, detail))
                 if count != out_w * out_h * 3:
-                    fail("第 %d 帧返回 %d 个 float，应为 %d" % (i, count, out_w * out_h * 3))
+                    fail("Frame %d: host returned %d floats, expected %d" % (i, count, out_w * out_h * 3))
                 raw = V._read_exact(proc.stdout, float_bytes)
                 frame = np.frombuffer(raw, dtype=np.float32).reshape((out_h, out_w, 3))
                 corrected, order = V._channel_choice(frame, src, chosen or "auto")
@@ -336,7 +353,7 @@ class DLSS5NRWineUpscale:
             proc.stdin = None
             done = V._read_exact(proc.stdout, 4)
             if done != V.MAGIC_END1:
-                fail("host 没有发 END1（收到 %r）" % (done,))
+                fail("Host did not send END1 (received %r)" % (done,))
         finally:
             if proc.poll() is None:
                 # 参考 310.8 运行时在发完 END1 之后可能卡在自己的进程析构里；
@@ -350,28 +367,28 @@ class DLSS5NRWineUpscale:
                         pass
 
         report = "\n".join([
-            "DLSS 5 Neural Rendering (feature 18) · Wine 路径",
-            "  %d 帧   %dx%d -> %dx%d   %s   PerfQualityValue=%d" % (
+            "DLSS 5 Neural Rendering (feature 18) - Wine path",
+            "  %d frames   %dx%d -> %dx%d   %s   PerfQualityValue=%d" % (
                 n, in_w, in_h, out_w, out_h, scale, perf_quality),
-            "  通道序 %s   warmup=%d   reset_each_frame=%s   auto_mask=%s" % (
+            "  channel order %s   warmup=%d   reset_each_frame=%s   auto_mask=%s" % (
                 chosen, warmup_frames, reset_each_frame, auto_mask),
-            "  DLSS 模型预设 %s%s" % (model_preset,
-                "" if mp else "   ← 建议改成 L 或 M，实测高 12 个百分点"),
-            "  有效参数 structure=%.2f tone=%.2f%s   （intensity/preset/style 本路径无效）" % (
+            "  DLSS model preset %s%s" % (model_preset,
+                "" if mp else "   <- try L or M; measured 12 points sharper"),
+            "  active params structure=%.2f tone=%.2f%s   (intensity/preset/style are inert here)" % (
                 structure, tone,
-                ("  skin=%.2f" % skin) if auto_mask else "  skin 未生效(auto_mask=off)"),
+                ("  skin=%.2f" % skin) if auto_mask else "  skin inactive (auto_mask=off)"),
             "  host=%s" % host,
-            "  运行时 nvngx_dlssnr.dll=%d B%s" % (
+            "  runtime nvngx_dlssnr.dll=%d B%s" % (
                 (runtime / "nvngx_dlssnr.dll").stat().st_size,
                 "   carrier nvngx_dlss.dll=%d B" % (runtime / "nvngx_dlss.dll").stat().st_size
                 if (runtime / "nvngx_dlss.dll").is_file() else ""),
-            "  host 关键几行：",
+            "  host highlights:",
         ] + ["    " + l for l in _host_highlights(log)])
         return (torch.from_numpy(out), report)
 
 
 class DLSS5NRWineStatus:
-    """先跑这个：不碰 GPU，只检查文件与环境齐不齐。"""
+    """Run this first: touches no GPU, only checks that files and environment are present."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -389,7 +406,7 @@ class DLSS5NRWineStatus:
 
     def inspect(self, repo_dir, wine, prefix, display):
         repo = Path(repo_dir).expanduser().resolve()
-        lines = ["DLSS 5 NR (Wine) 自检", "  仓库: %s" % repo]
+        lines = ["DLSS 5 NR (Wine) self check", "  repo: %s" % repo]
         items = [
             ("host",    repo / "native" / "bin" / "dlss5nr_host.exe"),
             ("bridge",  repo / "native" / "bin" / "dlss5nr_bridge.dll"),
@@ -404,19 +421,19 @@ class DLSS5NRWineStatus:
                 sz = p.stat().st_size if p.is_file() else 0
                 lines.append("  ✓ %-8s %s%s" % (name, p, ("  %d B" % sz) if sz else ""))
             else:
-                lines.append("  ✗ %-8s 缺失: %s" % (name, p))
-        lines.append("  DISPLAY=%s（进程内 %s）" % (display, os.environ.get("DISPLAY", "<未设>")))
+                lines.append("  x %-8s missing: %s" % (name, p))
+        lines.append("  DISPLAY=%s (in-process %s)" % (display, os.environ.get("DISPLAY", "<unset>")))
         try:
             import cv2  # noqa: F401
-            lines.append("  ✓ cv2 %s（光流运动向量可用）" % cv2.__version__)
+            lines.append("  + cv2 %s (optical-flow motion vectors available)" % cv2.__version__)
         except Exception:
-            lines.append("  ⚠️ 无 cv2 —— 运动向量退化为零、每帧重置，视频会丢时域收益")
+            lines.append("  ! no cv2 - motion vectors fall back to zero and history resets every frame; video loses all temporal benefit")
         try:
             r = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
                                 "--format=csv,noheader"], capture_output=True, text=True, timeout=20)
-            lines.append("  GPU: %s" % (r.stdout.strip() or "查不到"))
+            lines.append("  GPU: %s" % (r.stdout.strip() or "unavailable"))
         except Exception as e:
-            lines.append("  GPU: 查不到 (%s)" % e)
+            lines.append("  GPU: unavailable (%s)" % e)
         return ("\n".join(lines),)
 
 
@@ -425,6 +442,6 @@ NODE_CLASS_MAPPINGS = {
     "DLSS5NRWineStatus": DLSS5NRWineStatus,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "DLSS5NRWineUpscale": "DLSS 5 神经渲染 · Wine (Linux)",
-    "DLSS5NRWineStatus": "DLSS 5 NR · 自检 (Wine)",
+    "DLSS5NRWineUpscale": "DLSS 5 Neural Rendering - Wine (Linux)",
+    "DLSS5NRWineStatus": "DLSS 5 NR - Self Check (Wine)",
 }
