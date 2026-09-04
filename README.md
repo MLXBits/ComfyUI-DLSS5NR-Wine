@@ -103,6 +103,57 @@ bash ComfyUI-DLSS5NR-Wine/install/setup_prefix.sh /workspace/dlss5/prefix/pfx
 | `reset_each_frame` | 静态图批量打开；视频不要开，会丢时域收益 |
 | `channel_order` | `auto` 即可。NR DLL 出现过 RGB / BGR 两种通道布局，`auto` 只判一次然后整段沿用，避免色彩闪烁 |
 
+## 调参
+
+**七个参数里只有三个真的起作用。** 下面每条都有一手来源或本机实测。
+
+| 参数 | 有效？ | 说明 |
+|---|---|---|
+| `structure` | ✅ | **唯一真正的清晰度杠杆。** NVIDIA：Structure Intensity 管高频细节（环境光遮蔽、接触阴影、反射、次表面散射） |
+| `tone` | ✅ | 低频：整体光照与色彩响应。设 `0` = 完全保留原片配色 |
+| `auto_mask` | ✅ | 自动识别皮肤并保护它不被过度锐化 —— 因此会**降低**整体锐度 |
+| `skin` | ⚠️ | **只有 `auto_mask` 开启时才有效果**。`-1` 的语义是「跟随 structure」，不是关闭 |
+| `intensity` | ❌ | 本路径无效。NVIDIA SDK 里没有独立 intensity，只有 Structure/Tone 两个滑块 |
+| `preset` | ❌ | inert：出厂 DLL 只含单一网络，没有可切换的对象 |
+| `style` | ❌ | inert，同上 |
+
+### 范围
+
+NVIDIA SDK 文档写 **0–1**，Merserk 的 UI 放到 **0–2**。本机实测 `structure` **越过 2.0 仍在继续起效**，但那已无任何文档背书。
+
+### 实测（RTX 5090，H3 出片 736×1280 → 1.724×，高频能量 vs Lanczos 放大）
+
+| 参数组 | 相对 Lanczos |
+|---|---:|
+| `structure=1.0`（上游 CLI 默认） | **−2.2%** ← 比普通插值还糊 |
+| `structure=1.5 skin=1.0` | −1.5% |
+| `structure=2.0` | +1.9% |
+| `structure=2.0 tone=2.0 skin=2.0` | +4.5% |
+| `structure=3.0`（超文档） | **+9.7%** |
+| `structure=4.0`（超文档） | **+12.8%** |
+
+**所以本节点把 `structure` 默认设成 2.0** —— 上游 CLI 的 1.0 会得到比双三次插值还软的结果。
+
+### 建议档位
+
+| 场景 | structure | tone | skin | auto_mask |
+|---|---|---|---|---|
+| 产品特写 / 环境 | 2.0 – 3.0 | 1.0 | −1 | 关 |
+| 人脸特写 | 1.5 – 2.0 | 1.0 | 1.0 | **开** |
+| 只要最大锐度 | 3.0 – 4.0 | 1.0 | −1 | 关 |
+
+NVIDIA 自己给的工作室共识是：*environments and backgrounds pushed to maximum uplift, while **characters and faces get tuned individually and much more conservatively***。社区把拉满叫 **"AI slop look"**，人脸过锐会出假毛孔假皱纹。
+
+⚠️ **高频能量只是锐度的代理指标，不等于「好看」。** 上生产前必须用眼睛在真实素材上确认。
+
+### 来源
+
+- [NVIDIA · DLSS 5 3D-Guided Neural Rendering](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/) —— Structure/Tone 语义
+- [TechPowerUp · DLSS 5 Technical Preview](https://www.techpowerup.com/review/nvidia-dlss-5-technical-preview/3.html) —— 0–1 范围、工作室共识
+- [Merserk README 控制表](https://github.com/Merserk/dlss5-visual-enhancer) —— 0–2 UI 范围与默认值
+- [nexusmods/site/mods/2224](https://www.nexusmods.com/site/mods/2224) —— skin=−1 跟随 structure、preset/style 可能无效
+- [ThunderRuler/dlss5-installer-skill · config-reference.md](https://github.com/ThunderRuler/dlss5-installer-skill/blob/main/references/config-reference.md) —— 从 addon 二进制提取的键表，明写 NRPreset/NRStyle "Currently inert"
+
 ## 已知限制
 
 1. 运动向量来自 **OpenCV 光流估计**（Merserk 兼容口径），不是真 motion vector。真实素材上可能有时域瑕疵，上生产前请肉眼确认。

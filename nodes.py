@@ -49,6 +49,32 @@ SCALE_CHOICES = {
 }
 STYLE_CHOICES = {"Default": 0, "Natural": 1, "Cinematic": 2}
 
+# 🔴 哪些参数真的起作用（2026-09-04 实测 + 一手来源）
+#
+#   structure  ✅ 唯一真正的清晰度杠杆。NVIDIA 官方：Structure Intensity 管高频细节
+#                （环境光遮蔽/接触阴影/反射/次表面散射），SDK 范围 0-1。
+#                Merserk UI 放到 0-2。实测 3.0 -> 高频能量 +9.7%、4.0 -> +12.8%，
+#                越过文档上限仍在起效，但已无任何文档背书，自担风险。
+#   tone       ✅ 低频：整体光照与色彩响应。设 0 = 完全保留原片配色。效果比 structure 小。
+#   skin       ⚠️ 只有 auto_mask=True 时才有效果（实测：mask 关时改它输出逐字节不变）。
+#                -1 的语义是「跟随 structure」，不是关闭。
+#   auto_mask  ✅ 自动识别皮肤区域并保护它不被过度锐化 —— 因此会**降低**整体锐度。
+#                人脸特写建议开，产品/环境建议关。
+#   intensity  ❌ 本路径无效。NVIDIA SDK 里根本没有独立的 intensity（只有 Structure/Tone
+#                两个滑块）；RenoDX 的 NRIntensity 应是它自己混合层的乘数，而这条 bridge
+#                直接调 DLSSNR 快照、没有那层混合。实测改它输出逐字节不变。
+#   preset     ❌ inert。出厂 DLL 只含单一网络，没有可切换的对象。
+#   style      ❌ inert，同上。
+#
+# 依据：NVIDIA DLSS 5 新闻稿 / TechPowerUp 技术预览（Structure & Tone 语义、0-1 范围、
+#      「环境拉满、人脸保守」的工作室共识）；Merserk README 控制表（0-2 范围与默认值）；
+#      nexusmods/site/mods/2224（skin=-1 跟随 structure、preset/style 可能无效）；
+#      ThunderRuler/dlss5-installer-skill config-reference.md（从 addon 二进制提取的键表，
+#      明确写 NRPreset/NRStyle "Currently inert"）；以及本机 RTX 5090 上的高频能量实测。
+#
+# ⚠️ 高频能量只是锐度的代理指标，不等于「好看」。社区共识是拉满 = "AI slop look"，
+#    人脸过锐会出假毛孔假皱纹。上生产前必须用眼睛在真实素材上确认。
+
 
 class Dlss5NRWineError(RuntimeError):
     pass
@@ -93,21 +119,26 @@ class DLSS5NRWineUpscale:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "scale": (list(SCALE_CHOICES),),
+                "scale": (list(SCALE_CHOICES), {"default": "1.724x (Balanced)"}),
                 "repo_dir": ("STRING", {"default": DEFAULT_REPO, "multiline": False}),
                 "wine": ("STRING", {"default": DEFAULT_WINE, "multiline": False}),
                 "prefix": ("STRING", {"default": DEFAULT_PFX, "multiline": False}),
                 "display": ("STRING", {"default": DEFAULT_DISPLAY, "multiline": False,
                                        "tooltip": "必填。去掉 DISPLAY 后 DXVK 连 Vulkan instance 都建不出来（实测）。"}),
                 "warmup_frames": ("INT", {"default": 8, "min": 0, "max": 600}),
-                "style": (list(STYLE_CHOICES),),
-                "preset": ("INT", {"default": 0, "min": 0, "max": 7}),
-                "intensity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05}),
-                "tone": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05}),
-                "structure": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05}),
-                "skin": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 4.0, "step": 0.05,
-                                   "tooltip": "-1 = 交给运行时自己决定（上游 CLI 的默认）"}),
-                "auto_mask": ("BOOLEAN", {"default": False}),
+                "style": (list(STYLE_CHOICES), {"tooltip": "❌ 无效：出厂 DLL 只含单一网络，没有可切换对象"}),
+                "preset": ("INT", {"default": 0, "min": 0, "max": 7,
+                                   "tooltip": "❌ 无效，同 style"}),
+                "intensity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                                        "tooltip": "❌ 本路径无效（实测改它输出逐字节不变）。NVIDIA SDK 里没有独立 intensity"}),
+                "tone": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05,
+                                   "tooltip": "低频：整体光照与色彩响应。0 = 完全保留原片配色"}),
+                "structure": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 4.0, "step": 0.05,
+                                        "tooltip": "✅ 唯一真正的清晰度杠杆。NVIDIA SDK 0-1、Merserk UI 0-2；实测 3.0=+9.7% 4.0=+12.8% 仍在起效但超出文档。人脸 1.5-2.0，产品/环境 2.0-3.0"}),
+                "skin": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0, "step": 0.05,
+                                   "tooltip": "-1 = 跟随 structure。⚠️ 只有 auto_mask 开启时才有效果"}),
+                "auto_mask": ("BOOLEAN", {"default": False,
+                                          "tooltip": "自动识别皮肤区域并保护它不被过度锐化 —— 会降低整体锐度。人脸特写建议开，产品/环境建议关"}),
                 "reset_each_frame": ("BOOLEAN", {"default": False,
                                                  "tooltip": "关掉时域复用。静态图批量走这个，视频不要开。"}),
                 "channel_order": (["auto", "RGBA", "BGRA"],),
@@ -257,6 +288,9 @@ class DLSS5NRWineUpscale:
                 n, in_w, in_h, out_w, out_h, scale, perf_quality),
             "  通道序 %s   warmup=%d   reset_each_frame=%s   auto_mask=%s" % (
                 chosen, warmup_frames, reset_each_frame, auto_mask),
+            "  有效参数 structure=%.2f tone=%.2f%s   （intensity/preset/style 本路径无效）" % (
+                structure, tone,
+                ("  skin=%.2f" % skin) if auto_mask else "  skin 未生效(auto_mask=off)"),
             "  host=%s" % host,
             "  运行时 nvngx_dlssnr.dll=%d B%s" % (
                 (runtime / "nvngx_dlssnr.dll").stat().st_size,
