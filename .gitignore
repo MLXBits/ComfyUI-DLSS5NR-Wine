@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+
+# 🔴 NVIDIA 专有运行时，永远不进这个仓库。
+# 上游 kos94ok 项目专门有 tools/check_no_proprietary_binaries.py 防这件事。
+nvngx_dlssnr.dll
+nvngx_dlss.dll
+nvngx_dlssg.dll
+nvngx_dlssd.dll
+nvngx.dll
+_nvngx.dll
+d3dcompiler_47.dll
+runtime/
+dist/
