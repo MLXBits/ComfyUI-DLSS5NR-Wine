@@ -105,73 +105,71 @@ bash ComfyUI-DLSS5NR-Wine/install/setup_prefix.sh /workspace/dlss5/prefix/pfx
 
 ## 调参
 
-**七个参数里只有三个真的起作用。** 下面每条都有一手来源或本机实测。
+### 🔴 最大的杠杆：DLSS 模型预设
 
-| 参数 | 有效？ | 说明 |
-|---|---|---|
-| `structure` | ✅ | **唯一真正的清晰度杠杆。** NVIDIA：Structure Intensity 管高频细节（环境光遮蔽、接触阴影、反射、次表面散射） |
-| `tone` | ✅ | 低频：整体光照与色彩响应。设 `0` = 完全保留原片配色 |
-| `auto_mask` | ✅ | 自动识别皮肤并保护它不被过度锐化 —— 因此会**降低**整体锐度 |
-| `skin` | ⚠️ | **只有 `auto_mask` 开启时才有效果**。`-1` 的语义是「跟随 structure」，不是关闭 |
-| `intensity` | ❌ | 本路径无效。NVIDIA SDK 里没有独立 intensity，只有 Structure/Tone 两个滑块 |
-| `preset` | ❌ | inert：出厂 DLL 只含单一网络，没有可切换的对象 |
-| `style` | ❌ | inert，同上 |
+**上游 bridge 从来没设过 `DLSS.Hint.Render.Preset.*`**，所以 SR carrier 一直跑在驱动默认档上。
+本仓库用 `install/patches/0001-dlss-model-preset.patch` 补上，并做成节点参数 `model_preset`。
 
-### 范围
+实测（RTX 5090，H3 出片 736×1280 → 1.724×，`structure=2.0`，高频能量 vs Lanczos 放大）：
 
-NVIDIA SDK 文档写 **0–1**，Merserk 的 UI 放到 **0–2**。本机实测 `structure` **越过 2.0 仍在继续起效**，但那已无任何文档背书。
+| model_preset | 高频能量 | vs Lanczos |
+|---|---:|---:|
+| Default（驱动默认） | 0.3158 | +1.9% |
+| J (10) | 0.3159 | +2.0% |
+| K (11) | 0.3158 | +1.9%（与 Default **逐字节相同** → 默认就是 K） |
+| **L (12)** | 0.3540 | **+14.3%** |
+| **M (13)** | 0.3546 | **+14.5%** |
 
-### 实测（RTX 5090，H3 出片 736×1280 → 1.724×，高频能量 vs Lanczos 放大）
+与社区口径一致：50 系驱动默认 Quality/Balanced 用 K、Performance 用 M；[hardforum](https://hardforum.com/threads/591-74-new-dlss-4-5.2045793/page-3) 上的说法是 K 相对 M "looked too blurry"。做法沿用 [Merserk v4.0 changelog](https://github.com/Merserk/dlss5-visual-enhancer/releases)：*"Added forced J/K/L/M preset support across DLAA, Quality, Balanced, Performance, Ultra Performance, and Ultra Quality hint parameters."* 键名从 `nvngx_dlss.dll` 字符串表确认。
 
-| 参数组 | 相对 Lanczos |
-|---|---:|
-| `structure=1.0`（上游 CLI 默认） | **−2.2%** ← 比普通插值还糊 |
-| `structure=1.5 skin=1.0` | −1.5% |
-| `structure=2.0` | +1.9% |
-| `structure=2.0 tone=2.0 skin=2.0` | +4.5% |
-| `structure=3.0`（超文档） | **+9.7%** |
-| `structure=4.0`（超文档） | **+12.8%** |
+### 效果分解
 
-**所以本节点把 `structure` 默认设成 2.0** —— 上游 CLI 的 1.0 会得到比双三次插值还软的结果。
+| 配置 | 高频能量 | vs Lanczos |
+|---|---:|---:|
+| 默认预设 · NR 关（只有 carrier） | 0.3016 | −2.6% |
+| 默认预设 · structure 2.0 | 0.3158 | +1.9% |
+| **M · NR 关（只有 carrier）** | 0.3387 | **+9.3%** |
+| M · structure 1.0 | 0.3422 | +10.5% |
+| **M · structure 2.0** | 0.3546 | **+14.5%** |
+| M · structure 3.0（超文档） | 0.3757 | **+21.3%** |
+| 默认预设 · structure 2.0 · auto_mask 开 | 0.3086 | −0.4% |
+| 1.0x · structure 2.0（无 carrier） | — | **−3.9% vs 原片** |
+
+**光换预设就值 12 个百分点，NR 的 structure 再加 5 个。**
 
 ### 建议档位
 
-| 场景 | scale | structure | tone | auto_mask |
+| 场景 | scale | model_preset | structure | auto_mask |
 |---|---|---|---|---|
-| 求清晰（通用） | 1.724x / 2.0x | 2.0 | 1.0 | **关** |
-| 最大锐度（超文档） | 1.724x / 2.0x | 3.0 – 4.0 | 1.0 | 关 |
-| 想保护皮肤质感 | 1.724x | 1.5 | 1.0 | 开（会损失大部分锐度） |
+| **通用（推荐）** | 1.724x / 2.0x | **M** | 2.0 | 关 |
+| 更锐（超文档范围） | 1.724x / 2.0x | M | 3.0 – 4.0 | 关 |
+| 保护皮肤质感 | 1.724x | M | 1.5 | 开（会损失大部分锐度） |
 | ❌ 不要用 | **1.0x** | — | — | — |
 
-### 效果分解（实测，RTX 5090，H3 出片 736×1280）
+### 各参数是否有效
 
-| 配置 | 高频能量 | 相对基准 |
-|---|---:|---:|
-| 1.724x · NR 关到底（只有 carrier） | 0.3016 | **−2.6%** vs Lanczos |
-| 1.724x · structure 2.0 · mask 关 | 0.3158 | **+1.9%** vs Lanczos |
-| 1.724x · structure 2.0 · mask 开 | 0.3086 | −0.4% vs Lanczos |
-| 1.0x · NR 关到底（等于直通） | 0.4180 | +0.8% vs 原片 |
-| 1.0x · structure 2.0 | 0.3987 | **−3.9%** vs 原片 |
+| 参数 | 有效？ | 说明 |
+|---|---|---|
+| `model_preset` | ✅✅ | **最大杠杆**，见上表 |
+| `structure` | ✅ | NVIDIA：Structure Intensity 管高频细节（环境光遮蔽/接触阴影/反射/次表面散射） |
+| `tone` | ✅ | 低频：整体光照与色彩响应。设 `0` = 完全保留原片配色 |
+| `auto_mask` | ✅ | 保护皮肤不被过度锐化 —— 因此会**降低**整体锐度 |
+| `skin` | ⚠️ | 只有 `auto_mask` 开启时才有效果。`-1` = 跟随 structure |
+| `intensity` | ❌ | 本路径无效。NVIDIA SDK 里没有独立 intensity |
+| `preset` / `style` | ❌ | inert：出厂 DLL 只含单一网络 |
 
-三条结论：
+### 范围
 
-1. **DLSS SR carrier 单独并不比 Lanczos 好**（−2.6%）。
-2. **feature 18 只在 >1× 时有正作用**（比只有 carrier 高 4.5 个百分点）—— 它是给放大后变软的画面补结构，不是给已经锐的画面加锐。
-3. **`auto_mask` 会吃掉大部分收益**（+1.9% → −0.4%）。
-
-### 期望值管理
-
-即使配置全对，相对一个好的 Lanczos 缩放**也只有约 +2%**。原因是结构性的：DLSS 5 NR 是 **3D-guided** 的，需要真实深度缓冲与运动矢量，而这条视频路径里[上游架构文档](https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux/blob/main/docs/ARCHITECTURE.md)自己写着 *"Video has no scene-depth buffer, so the carrier receives a **zero-filled** R32_FLOAT depth surface"*，运动矢量也是 OpenCV 光流估计的。它赖以工作的两路引导信息，一路全零、一路是猜的。
-
-**这套东西给的是「不同质感的细节」，不是「更高的分辨率」。** 想要真的更清晰，先把生成端的分辨率提上去。
+NVIDIA SDK 文档写 **0–1**，Merserk UI 放到 **0–2**。实测 `structure` 越过 2.0 仍继续起效（3.0 → +21.3%），但已无文档背书。社区把拉满叫 **"AI slop look"**，人脸过锐会出假毛孔假皱纹 —— ⚠️ 高频能量只是锐度的代理指标，**上生产前必须用眼睛在真实素材上确认**。
 
 ### 来源
 
 - [NVIDIA · DLSS 5 3D-Guided Neural Rendering](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/) —— Structure/Tone 语义
-- [TechPowerUp · DLSS 5 Technical Preview](https://www.techpowerup.com/review/nvidia-dlss-5-technical-preview/3.html) —— 0–1 范围、工作室共识
-- [Merserk README 控制表](https://github.com/Merserk/dlss5-visual-enhancer) —— 0–2 UI 范围与默认值
+- [TechPowerUp · DLSS 5 Technical Preview](https://www.techpowerup.com/review/nvidia-dlss-5-technical-preview/3.html) —— 0–1 范围、「环境拉满人脸保守」的工作室共识
+- [Merserk releases](https://github.com/Merserk/dlss5-visual-enhancer/releases) —— 强制 J/K/L/M 预设的做法；控制表 0–2 范围
+- [hardforum](https://hardforum.com/threads/591-74-new-dlss-4-5.2045793/page-3) —— K 相对 M 偏软
 - [nexusmods/site/mods/2224](https://www.nexusmods.com/site/mods/2224) —— skin=−1 跟随 structure、preset/style 可能无效
-- [ThunderRuler/dlss5-installer-skill · config-reference.md](https://github.com/ThunderRuler/dlss5-installer-skill/blob/main/references/config-reference.md) —— 从 addon 二进制提取的键表，明写 NRPreset/NRStyle "Currently inert"
+- [ThunderRuler/dlss5-installer-skill · config-reference.md](https://github.com/ThunderRuler/dlss5-installer-skill/blob/main/references/config-reference.md) —— NRPreset/NRStyle "Currently inert"
 
 ## 已知限制
 

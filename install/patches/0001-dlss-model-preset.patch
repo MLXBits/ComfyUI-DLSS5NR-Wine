@@ -1,0 +1,49 @@
+--- native/dlss5nr_bridge.cpp.bak_preset	2026-09-04 04:20:04.810047199 +0000
++++ native/dlss5nr_bridge.cpp	2026-09-04 06:32:36.676038500 +0000
+@@ -14,6 +14,7 @@
+ #include <cstdarg>
+ #include <cstdint>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <mutex>
+ #include <string>
+@@ -606,6 +607,38 @@
+     SetParamUInt("ResourceOutHeight", g_output_height);
+     SetParamUInt("PerfQualityValue", static_cast<unsigned int>(std::max(0, perf_quality)));
+ 
++    // -- DLSS model preset override (J=10 K=11 L=12 M=13; 0 = keep driver default) --
++    // Upstream does not expose this. Merserk v4.0 changelog: "Added forced J/K/L/M
++    // preset support across DLAA, Quality, Balanced, Performance, Ultra Performance,
++    // and Ultra Quality hint parameters."  Community testing reports preset M as the
++    // sharpest and K as noticeably softer; on 50-series the driver default is K for
++    // Quality/Balanced and M for Performance. Key names confirmed from the string
++    // table of nvngx_dlss.dll.
++    {
++        const char* mp = std::getenv("DLSS5NR_MODEL_PRESET");
++        const int preset_value = mp ? std::atoi(mp) : 0;
++        if (preset_value > 0) {
++            static const char* const kPresetKeys[] = {
++                "DLSS.Hint.Render.Preset.DLAA",
++                "DLSS.Hint.Render.Preset.Quality",
++                "DLSS.Hint.Render.Preset.Balanced",
++                "DLSS.Hint.Render.Preset.Performance",
++                "DLSS.Hint.Render.Preset.UltraPerformance",
++                "DLSS.Hint.Render.Preset.UltraQuality",
++            };
++            for (const char* key : kPresetKeys) {
++                SetParamUInt(key, static_cast<unsigned int>(preset_value));
++            }
++            static bool logged = false;
++            if (!logged) {
++                logged = true;
++                std::fprintf(stderr, "[dlss5nr] DLSS model preset forced: %d (J=10 K=11 L=12 M=13)", preset_value);
++                std::fputc(10, stderr);
++            }
++        }
++    }
++
++
+     // A video frame has no depth buffer, but DLSS still requires the resource
+     // and the feature-create flags.  The bridge uploads a constant R32_FLOAT
+     // surface (0.0); with the inverted-depth flag this represents the far

@@ -24,6 +24,18 @@ if ! command -v "$CXX" >/dev/null 2>&1; then
 fi
 "$CXX" --version | head -1 | sed 's/^/   /'
 
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+echo "== 2.5) 打补丁：给 bridge 加 DLSS 模型预设覆盖"
+# 上游 bridge 从来没设过 DLSS.Hint.Render.Preset.*，SR carrier 一直跑在驱动默认档(K)。
+# 实测把它改成 L/M，高频能量从 +1.9% 跳到 +14.5%（vs Lanczos）。详见 README「调参」。
+if grep -q DLSS5NR_MODEL_PRESET "$ROOT/native/dlss5nr_bridge.cpp"; then
+    echo "   已打过，跳过"
+elif patch -p0 -d "$ROOT" --forward --silent < "$HERE/patches/0001-dlss-model-preset.patch"; then
+    echo "   ✓ 补丁已应用"
+else
+    echo "   ⚠️ 补丁没打上（上游改动过？）——仍可编译，但 model_preset 参数会无效"
+fi
+
 echo "== 3) 交叉编译"
 mkdir -p "$ROOT/native/bin" "$ROOT/runtime/caller"
 FLAGS="-std=c++17 -O2 -static -static-libgcc -static-libstdc++"

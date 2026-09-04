@@ -51,6 +51,18 @@ SCALE_CHOICES = {
 }
 STYLE_CHOICES = {"Default": 0, "Natural": 1, "Cinematic": 2}
 
+# DLSS 模型预设（SR carrier 用的，不是 NR 的 preset）。SDK 值 J=10 K=11 L=12 M=13。
+# 🔴 这是清晰度最大的一个杠杆，而上游 bridge 从来没设过 —— 它一直跑在驱动默认档上。
+#    实测（RTX 5090，H3 出片 736x1280 -> 1.724x，structure=2.0，高频能量 vs Lanczos）：
+#        默认  +1.9%      J  +2.0%      K  +1.9%（与默认逐字节相同 => 默认就是 K）
+#        L    +14.3%      M +14.5%
+#    与社区口径一致：50 系默认 Quality/Balanced=K、Performance=M；K 偏软、M 最锐。
+#    实现方式：给 nvngx_dlss.dll 的六个 DLSS.Hint.Render.Preset.* 键统一写入该值
+#    （键名从 DLL 字符串表确认），做法沿用 Merserk v4.0 changelog 的描述。
+#    需要打过补丁的 dlss5nr_bridge.dll（读环境变量 DLSS5NR_MODEL_PRESET）。
+MODEL_PRESETS = {"Default (驱动默认·实测=K)": 0, "J (10)": 10, "K (11)": 11,
+                 "L (12) 锐": 12, "M (13) 最锐": 13}
+
 # 🔴 哪些参数真的起作用（2026-09-04 实测 + 一手来源）
 #
 #   structure  ✅ 唯一真正的清晰度杠杆。NVIDIA 官方：Structure Intensity 管高频细节
@@ -128,6 +140,8 @@ class DLSS5NRWineUpscale:
                 "prefix": ("STRING", {"default": DEFAULT_PFX, "multiline": False}),
                 "display": ("STRING", {"default": DEFAULT_DISPLAY, "multiline": False,
                                        "tooltip": "必填。去掉 DISPLAY 后 DXVK 连 Vulkan instance 都建不出来（实测）。"}),
+                "model_preset": (list(MODEL_PRESETS), {"default": "M (13) 最锐",
+                                  "tooltip": "🔴 清晰度最大杠杆。实测 L/M 比默认(K)高 12 个百分点。需要打过补丁的 bridge；未打补丁时此项无效果"}),
                 "warmup_frames": ("INT", {"default": 8, "min": 0, "max": 600}),
                 "style": (list(STYLE_CHOICES), {"tooltip": "❌ 无效：出厂 DLL 只含单一网络，没有可切换对象"}),
                 "preset": ("INT", {"default": 0, "min": 0, "max": 7,
@@ -154,9 +168,9 @@ class DLSS5NRWineUpscale:
     FUNCTION = "upscale"
     CATEGORY = "image/DLSS 5 NR (Wine)"
 
-    def upscale(self, image, scale, repo_dir, wine, prefix, display, warmup_frames,
-                style, preset, intensity, tone, structure, skin, auto_mask,
-                reset_each_frame, channel_order, gpu_index):
+    def upscale(self, image, scale, repo_dir, wine, prefix, display, model_preset,
+                warmup_frames, style, preset, intensity, tone, structure, skin,
+                auto_mask, reset_each_frame, channel_order, gpu_index):
         repo = Path(repo_dir).expanduser().resolve()
         V = _load_upstream(repo)
 
@@ -210,6 +224,11 @@ class DLSS5NRWineUpscale:
         # 只用 builtin(=n) 会让 NGX 起来但 NvAPI 看不到物理显卡 —— 上游注释与我们实测一致
         env.setdefault("WINEDLLOVERRIDES", "d3d12,d3d12core,nvapi64,dxgi=n,b")
         env.setdefault("WINEDEBUG", "-all")
+        mp = MODEL_PRESETS.get(model_preset, 0)
+        if mp:
+            env["DLSS5NR_MODEL_PRESET"] = str(mp)
+        else:
+            env.pop("DLSS5NR_MODEL_PRESET", None)
         os.makedirs(env["XDG_RUNTIME_DIR"], exist_ok=True)
 
         log: list[str] = []
@@ -301,6 +320,8 @@ class DLSS5NRWineUpscale:
                 n, in_w, in_h, out_w, out_h, scale, perf_quality),
             "  通道序 %s   warmup=%d   reset_each_frame=%s   auto_mask=%s" % (
                 chosen, warmup_frames, reset_each_frame, auto_mask),
+            "  DLSS 模型预设 %s%s" % (model_preset,
+                "" if mp else "   ← 建议改成 L 或 M，实测高 12 个百分点"),
             "  有效参数 structure=%.2f tone=%.2f%s   （intensity/preset/style 本路径无效）" % (
                 structure, tone,
                 ("  skin=%.2f" % skin) if auto_mask else "  skin 未生效(auto_mask=off)"),
