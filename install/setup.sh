@@ -274,7 +274,6 @@ elif [ -s "$DLSSG_DIR/dlssg-worker.exe" ] && [ -s "$DLSSG_DIR/nvngx_dlssg.dll" ]
     ok "already present in $DLSSG_DIR"
 else
     mkdir -p "$DLSSG_DIR"
-    LFS="https://media.githubusercontent.com/media/$DLSSG_REPO/$DLSSG_COMMIT/bin/runtime/dlssg"
     # Runtime, in order of preference. Every route ends at the same digest, so
     # this is purely about who you would rather get the bytes from and how much
     # you have to transfer to get them.
@@ -315,12 +314,16 @@ else
             ok "nvngx_dlssg.dll ($(stat -c%s "$G") B, from NVIDIA, sha256 verified)"
         else
             rm -f "$G.part"
-            info "NVIDIA route unavailable; falling back to the mirror"
+            info "could not get it from NVIDIA. Download the SDK yourself and"
+            info "re-run with --streamline-sdk <the zip or the extracted dir>:"
+            info "  $STREAMLINE_ZIP"
         fi
     fi
-    # 4. The community mirror. Same bytes, measured.
-    [ -s "$G" ] || fetch_pinned "$LFS/nvngx_dlssg.dll" "$DLSSG_RUNTIME_SHA256" \
-                                "$G" "nvngx_dlssg.dll"
+    # There is deliberately no fourth route. Copies of this DLL exist in
+    # community repos - one of them is byte-identical to NVIDIA's - but the
+    # licence restricts *distribution*, and pointing every user's download at
+    # someone else's redistribution is not a meaningful distance from doing it
+    # here. NVIDIA publishes it; that is where it comes from.
     # The worker has exactly one source: no NVIDIA equivalent exists and no
     # source is published for it anywhere, so there is nothing to build and the
     # pinned digest is the only assurance available. It is an unsigned
@@ -328,6 +331,7 @@ else
     if [ ! -s "$DLSSG_DIR/dlssg-worker.exe" ]; then
         info "dlssg-worker.exe: third-party, from $DLSSG_REPO"
         info "  @ $(printf '%.10s' "$DLSSG_COMMIT"), pinned by commit and sha256"
+        LFS="https://media.githubusercontent.com/media/$DLSSG_REPO/$DLSSG_COMMIT/bin/runtime/dlssg"
         fetch_pinned "$LFS/dlssg-worker.exe" "$DLSSG_WORKER_SHA256" \
                      "$DLSSG_DIR/dlssg-worker.exe" "dlssg-worker.exe"
     fi

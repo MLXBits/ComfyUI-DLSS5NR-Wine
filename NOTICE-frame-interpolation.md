@@ -44,12 +44,15 @@ cheapest route as well as the most trustworthy one. Order of preference:
 1. your own NVIDIA driver package, if it carries the file - guaranteed to match
    the running driver;
 2. a Streamline SDK you already have (`--streamline-sdk DIR|ZIP`), no download;
-3. NVIDIA's release zip, one member over HTTP Range;
-4. the copy in Konohamaru04's pack, as a fallback.
+3. NVIDIA's release zip, one member over HTTP Range.
 
-Route 4 is byte-identical to route 3. Measured 2026-09-04: both are
-`sha256 135eaf07...`, so the community copy is NVIDIA's unmodified Streamline
-v2.12.0 release binary.
+If all three fail the script says so and stops, rather than falling back to a
+community copy. Such copies exist, and one of them is byte-identical to
+NVIDIA's - measured 2026-09-04, both `sha256 135eaf07...` - so this costs
+nothing in bytes. It is deliberate anyway: the licence restricts
+*distribution*, and routing every user's download at somebody else's
+redistribution is not a meaningful distance from redistributing it here.
+NVIDIA publishes this file, so it comes from NVIDIA.
 
 **It is not vendored here, and cannot be.** The binary is not covered by
 Streamline's MIT `license.txt`; the file sitting beside it in `bin/x64/` is the
@@ -63,9 +66,10 @@ open source licence.
 
 ### `dlssg-worker.exe`
 
-One source only. NVIDIA publishes no equivalent, and no source is published for
-it in either upstream repository, so there is nothing to build and nothing to
-compare against. It is an unsigned third-party binary that the node executes
+One source only, and it is the compromise in this section. NVIDIA publishes no
+equivalent, and no source is published for it in either upstream repository, so
+there is nothing to build, nothing to compare against, and no first-party route
+of the kind the runtime gets. It is an unsigned third-party binary that the node executes
 under Wine; the pinned digest proves you get the same bytes that were verified
 here, and nothing about what those bytes do.
 

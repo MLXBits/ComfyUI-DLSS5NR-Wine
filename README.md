@@ -232,7 +232,7 @@ Needs at least 2 frames and even dimensions, same as the upscaler.
 `setup.sh` gets `nvngx_dlssg.dll` from NVIDIA's Streamline SDK release,
 pulling just that member out of the 232 MB zip over HTTP Range (3.75 MB
 transferred). If you already have the SDK, `--streamline-sdk DIR|ZIP` uses it
-and downloads nothing. `--no-dlssg` skips frame generation altogether. See
+and downloads nothing. It is never fetched from a community mirror. `--no-dlssg` skips frame generation altogether. See
 [NOTICE-frame-interpolation.md](NOTICE-frame-interpolation.md) for where each
 file comes from and why neither is vendored.
 
