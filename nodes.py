@@ -26,7 +26,9 @@ carries over instead of silently drifting out of sync.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -36,20 +38,163 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# 默认路径：装机脚本把仓库放这里。四项都可以用环境变量覆盖，这样同一份
-# 节点不用改代码就能跑在别的机器上（在 ComfyUI 的 systemd unit 或启动脚本
-# 里 export 即可）。
+# Where the install lives. Three sources, in this order:
 #
-# 注意 GE-Proton 11 起 files/bin 里只有 wine（已是 64 位），不再有 wine64；
-# 老的 GE-Proton 10 才需要显式指到 wine64。
-DEFAULT_REPO = os.environ.get("DLSS5NR_ROOT", "/workspace/dlss5nr")
-DEFAULT_WINE = os.environ.get(
-    "DLSS5NR_WINE", "/workspace/dlss5/GE-Proton10-34/files/bin/wine64")
-DEFAULT_PFX = os.environ.get("DLSS5NR_PREFIX", "/workspace/dlss5/prefix/pfx")
-DEFAULT_DISPLAY = os.environ.get("DLSS5NR_DISPLAY", ":99")
+#   1. DLSS5NR_* environment variables - for anyone who can set the
+#      environment ComfyUI runs in (a systemd unit, a launch script, docker).
+#   2. dlss5nr.local.json next to this file - written by install/setup.sh.
+#      Most people start ComfyUI by hand, where there is nowhere convenient
+#      to export anything, so the installer records what it built instead.
+#   3. A scan of the places setup.sh and bootstrap_vast.sh actually install
+#      to, so a plain `git clone && install/setup.sh` needs no configuration.
+#
+# These only seed the node widgets; every path stays editable per node, and a
+# saved workflow keeps whatever it was saved with.
+#
+# Note GE-Proton 11 dropped wine64 from files/bin - `wine` there is already
+# 64-bit. Only GE-Proton 10 and older need the explicit wine64.
+CONFIG_NAME = "dlss5nr.local.json"
+NODE_DIR = Path(__file__).resolve().parent
+UPSTREAM_URL = "https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux"
+# The file that proves a directory is the upstream source tree, not just a
+# directory that happens to carry the right name.
+ROOT_MARKER = Path("tools") / "dlss5nr_video.py"
+
+
+def _load_config():
+    """Read the installer's record of what it built. Never fatal.
+
+    A malformed or unreadable config must not stop the node pack from
+    importing - ComfyUI would then drop all three nodes with a traceback in
+    the log, which looks nothing like "your config file has a typo".
+    """
+    candidates = []
+    if os.environ.get("DLSS5NR_CONFIG"):
+        candidates.append(Path(os.environ["DLSS5NR_CONFIG"]).expanduser())
+    candidates.append(NODE_DIR / CONFIG_NAME)
+    for path in candidates:
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items() if v}, str(path)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            print("[dlss5nr] ignoring %s: %s" % (path, exc))
+    return {}, None
+
+
+CONFIG, CONFIG_PATH = _load_config()
+# Filled in by _setting(): widget -> where its default came from. The Self
+# Check node and the "not found" error both print this, because "the node is
+# looking at /workspace" is only confusing until you know why.
+PATH_SOURCES = {}
+
+
+def _proton_version(path: Path):
+    """Sort key for GE-Proton directories: GE-Proton11-6 must beat GE-Proton9-20."""
+    return [int(n) for n in re.findall(r"\d+", path.name)]
+
+
+def _discover_root():
+    for base in (Path.home() / "dlss5nr", Path("/workspace/dlss5nr"),
+                 NODE_DIR.parent / "dlss5nr"):
+        if (base / ROOT_MARKER).is_file():
+            return str(base)
+    return None
+
+
+def _discover_wine():
+    """The same places install/setup.sh and doctor.sh look, in the same order.
+
+    wine64 is tried before wine on purpose: GE-Proton 10 ships a 32-bit
+    *launcher* at files/bin/wine and the real 64-bit binary at files/bin/wine64,
+    and picking the launcher gets you a confusing failure much later. GE-Proton
+    11 dropped wine64 and its files/bin/wine is already 64-bit, so the same
+    order is right for both.
+    """
+    bases = [Path.home() / ".local/share/Steam/compatibilitytools.d",
+             Path.home() / ".steam/root/compatibilitytools.d",
+             Path("/usr/share/steam/compatibilitytools.d"),
+             Path.home() / "dlss5", Path("/workspace/dlss5")]
+    for base in bases:
+        if not base.is_dir():
+            continue
+        # Only GE-Proton: this path needs the DXVK/vkd3d-proton/dxvk-nvapi set
+        # those builds carry. setup.sh will fall back to another Proton family,
+        # but it verifies the result; a silent guess here should not.
+        for proton in sorted(base.glob("GE-Proton*"), key=_proton_version, reverse=True):
+            for name in ("wine64", "wine"):
+                candidate = proton / "files" / "bin" / name
+                if candidate.is_file():
+                    return str(candidate)
+    return None
+
+
+def _discover_prefix():
+    for base in (Path.home() / "dlss5", Path("/workspace/dlss5")):
+        pfx = base / "prefix" / "pfx"
+        if pfx.is_dir():
+            return str(pfx)
+    return None
+
+
+def _discover_dlssg():
+    root = CONFIG.get("root") or os.environ.get("DLSS5NR_ROOT") or _discover_root()
+    if root:
+        return str(Path(root) / "dlssg")
+    return None
+
+
+def _setting(env_key, config_key, discover, fallback):
+    """Resolve one path: environment, then installer config, then a scan."""
+    value = os.environ.get(env_key)
+    source = "environment %s" % env_key
+    if not value:
+        value, source = CONFIG.get(config_key), "config %s" % CONFIG_PATH
+    if not value:
+        value, source = discover(), "auto-detected"
+    if not value:
+        value, source = fallback, "built-in default - nothing found on this machine"
+    PATH_SOURCES[config_key] = source
+    return value
+
+
+DEFAULT_REPO = _setting("DLSS5NR_ROOT", "root", _discover_root, "/workspace/dlss5nr")
+DEFAULT_WINE = _setting("DLSS5NR_WINE", "wine", _discover_wine,
+                        "/workspace/dlss5/GE-Proton10-34/files/bin/wine64")
+DEFAULT_PFX = _setting("DLSS5NR_PREFIX", "prefix", _discover_prefix,
+                       "/workspace/dlss5/prefix/pfx")
+# An in-process DISPLAY is a far better guess than a hardcoded one: it is the
+# display ComfyUI itself was started with. :99 stays the fallback because a
+# machine with no DISPLAY at all is the headless case the README covers with
+# an Xorg dummy on :99.
+DEFAULT_DISPLAY = _setting("DLSS5NR_DISPLAY", "display",
+                           lambda: os.environ.get("DISPLAY"), ":99")
 # Frame generation lives in its own directory because it is a separate,
 # optional capability: dlssg-worker.exe plus nvngx_dlssg.dll.
-DEFAULT_DLSSG = os.environ.get("DLSS5NR_DLSSG_DIR", "/workspace/dlss5nr/dlssg")
+DEFAULT_DLSSG = _setting("DLSS5NR_DLSSG_DIR", "dlssg", _discover_dlssg,
+                         "/workspace/dlss5nr/dlssg")
+DEFAULTS = {"root": DEFAULT_REPO, "wine": DEFAULT_WINE, "prefix": DEFAULT_PFX,
+            "display": DEFAULT_DISPLAY, "dlssg": DEFAULT_DLSSG}
+
+
+def _path_origin(key, value):
+    """Where a widget's current value came from, for error messages.
+
+    Worth the four lines: a saved workflow stores the path it was saved with,
+    so a node can be pointing somewhere the current machine never configured -
+    and telling someone to fix their environment when the stale value is in
+    their graph sends them the wrong way entirely.
+    """
+    default = DEFAULTS.get(key)
+    try:
+        same = default and Path(default).expanduser() == Path(value).expanduser()
+    except Exception:
+        same = False
+    if same:
+        return PATH_SOURCES.get(key, "this node's widget")
+    return "this node's widget (a saved workflow keeps the path it was saved with)"
+
 
 # 档位 -> (倍率, PerfQualityValue)。取自上游 _PERF_QUALITY，写死在这里只是为了
 # 让下拉框有稳定顺序；真正的值仍从上游模块校验。
@@ -153,11 +298,20 @@ def _resolve_choice(value, table, what):
 
 def _load_upstream(repo: Path):
     """Load the upstream frontend as a module for its protocol constants and temporal guide."""
-    tool = repo / "tools" / "dlss5nr_video.py"
+    tool = repo / ROOT_MARKER
     if not tool.is_file():
         raise Dlss5NRWineError(
-            "Not found: %s. Run git clone https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux %s first"
-            % (tool, repo)
+            "No upstream source tree at %s (looked for %s).\n"
+            "That path came from: %s.\n"
+            "Fix it in any one of these ways:\n"
+            "  - set this node's repo_dir widget to your checkout, or\n"
+            "  - run install/setup.sh from %s, which installs the tree and\n"
+            "    writes %s so every node picks it up, or\n"
+            "  - clone it yourself (git clone %s <dir>) and point repo_dir there, or\n"
+            "  - export DLSS5NR_ROOT=<dir> in the environment ComfyUI runs in.\n"
+            "Restart ComfyUI after the last two - widget defaults are only read at startup."
+            % (repo, ROOT_MARKER, _path_origin("root", repo),
+               NODE_DIR, NODE_DIR / CONFIG_NAME, UPSTREAM_URL)
         )
     spec = importlib.util.spec_from_file_location("_dlss5nr_video", tool)
     mod = importlib.util.module_from_spec(spec)
@@ -583,7 +737,10 @@ class DLSS5NRWineStatus:
 
     def inspect(self, repo_dir, wine, prefix, display):
         repo = Path(repo_dir).expanduser().resolve()
-        lines = ["DLSS 5 NR (Wine) self check", "  repo: %s" % repo]
+        lines = ["DLSS 5 NR (Wine) self check", "  repo: %s" % repo,
+                 "  paths from: %s" % _path_origin("root", repo_dir)]
+        if not (repo / ROOT_MARKER).is_file():
+            lines.append("  ! no %s here - this is not the upstream source tree" % ROOT_MARKER)
         items = [
             ("host",    repo / "native" / "bin" / "dlss5nr_host.exe"),
             ("bridge",  repo / "native" / "bin" / "dlss5nr_bridge.dll"),

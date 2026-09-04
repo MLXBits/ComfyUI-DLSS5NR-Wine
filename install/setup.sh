@@ -234,22 +234,57 @@ done
 [ -n "$DISP" ] || DISP=":0"
 
 say "point ComfyUI at this install"
-cat <<CONF
-   Add these to the environment ComfyUI runs in. For a systemd user service,
-   ~/.config/systemd/user/comfyui.service.d/dlss5nr.conf:
-
-     [Service]
-     Environment=DLSS5NR_ROOT=$ROOT
-     Environment=DLSS5NR_WINE=$WINE
-     Environment=DLSS5NR_PREFIX=$PFX
-     Environment=DLSS5NR_DISPLAY=$DISP
-
-   then: systemctl --user daemon-reload && systemctl --user restart comfyui
-
-   ComfyUI must run with a working DISPLAY and XAUTHORITY. A service started
-   from a desktop session inherits both; one started from a bare ssh shell
-   does not.
-CONF
+# Write the paths next to the node instead of asking for environment
+# variables. Most people start ComfyUI by hand (`python main.py`), where there
+# is nowhere to put an export - and the node's built-in fallbacks are the
+# vast.ai /workspace layout, which is wrong on every other machine. nodes.py
+# reads this file at import, so a hand-started ComfyUI needs nothing else.
+CFG="$REPO/dlss5nr.local.json"
+if cat > "$CFG" <<JSON
+{
+  "_comment": "Written by install/setup.sh. Read by nodes.py; DLSS5NR_* environment variables override it. Safe to edit or delete.",
+  "root": "$ROOT",
+  "wine": "$WINE",
+  "prefix": "$PFX",
+  "display": "$DISP",
+  "dlssg": "$ROOT/dlssg"
+}
+JSON
+then
+    ok "wrote $CFG"
+    info "The node reads it at startup - no environment variables needed."
+    if [ "$(basename "$(dirname "$REPO")")" != "custom_nodes" ]; then
+        info "NOTE: $REPO is not inside a custom_nodes/ directory. If ComfyUI"
+        info "loads the node from somewhere else, copy that file there too."
+    fi
+else
+    info "could not write $CFG (read-only checkout?)"
+    info "Set these in the environment ComfyUI runs in instead:"
+    info "  export DLSS5NR_ROOT=$ROOT"
+    info "  export DLSS5NR_WINE=$WINE"
+    info "  export DLSS5NR_PREFIX=$PFX"
+    info "  export DLSS5NR_DISPLAY=$DISP"
+fi
 
 say "verifying"
 DLSS5NR_ROOT="$ROOT" DLSS5NR_PREFIX="$PFX" DLSS5NR_WINE="$WINE" bash "$HERE/doctor.sh"
+DOCTOR=$?
+
+# Last, so it survives the scrollback: doctor.sh prints ~60 lines, and the one
+# instruction that is actually an action for the user has to be the thing they
+# are still looking at when it stops.
+say "last step"
+if [ "$DOCTOR" -ne 0 ]; then
+    info "doctor.sh found missing required items above. Fix those first - the"
+    info "node will load either way, but it will fail when you run it."
+fi
+cat <<CONF
+
+   Restart ComfyUI - custom nodes are only scanned at startup.
+
+   It must run with a working DISPLAY and XAUTHORITY. A session started from a
+   desktop inherits both; one started from a bare ssh shell does not.
+
+CONF
+
+exit $DOCTOR

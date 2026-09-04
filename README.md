@@ -133,9 +133,21 @@ Then supply the one file nobody can supply for you:
 **This project does not ship, mirror, or link to it.** It is NVIDIA
 proprietary and pre-release.
 
-Finally point ComfyUI at the install. `setup.sh` prints the exact block; for a
-systemd user service it goes in
-`~/.config/systemd/user/comfyui.service.d/dlss5nr.conf`:
+Finally, restart ComfyUI - custom nodes are only scanned at startup.
+
+There is nothing else to configure. `setup.sh` writes the paths it built into
+`dlss5nr.local.json` beside `nodes.py`, and the node reads that at startup, so
+the widget defaults already point at your install. The file is gitignored and
+safe to edit or delete.
+
+If you never ran `setup.sh` - an install put somewhere by hand, say - the node
+still tries to find it, scanning `~/dlss5nr` and `/workspace/dlss5nr` for the
+upstream tree and `compatibilitytools.d` / `~/dlss5` for a GE-Proton `wine`. It
+picks the highest GE-Proton version it finds, and uses ComfyUI's own `DISPLAY`.
+
+Environment variables override both, for anyone who can set the environment
+ComfyUI runs in. In a systemd user service that is a drop-in at
+`~/.config/systemd/user/<your-unit>.service.d/dlss5nr.conf`:
 
 ```ini
 [Service]
@@ -145,8 +157,13 @@ Environment=DLSS5NR_PREFIX=/home/you/dlss5/prefix/pfx
 Environment=DLSS5NR_DISPLAY=:0
 ```
 
-These four set the node's widget defaults, so nobody has to edit `nodes.py`.
-Restart ComfyUI - custom nodes are only scanned at startup.
+A new or edited drop-in needs `systemctl --user daemon-reload` before the
+restart; the config file does not.
+
+All of this only seeds the **defaults** of the node's widgets. A saved
+workflow stores the paths it was saved with, so a graph carrying an old
+`repo_dir` keeps pointing there no matter what the machine says - fix that one
+in the node. The **Self Check** node prints where its paths came from.
 
 ### The display, and why Xvfb will not do
 
@@ -285,6 +302,7 @@ Run `install/doctor.sh` first; it explains most of these in place.
 
 | symptom | cause |
 |---|---|
+| `Not found: /workspace/dlss5nr/tools/dlss5nr_video.py` | The node is looking at the vast.ai default because nothing told it otherwise. Run `install/setup.sh` and restart ComfyUI, or set `repo_dir` on the node. |
 | `BrokenPipeError`, host exits in under a second | Header rejected. Usually `warmup_frames > frame_count` on an old build - this fork clamps it. |
 | `Value not in list` on a saved workflow | A dropdown label changed. This fork defers `scale` and `model_preset` validation to the node so old labels still resolve. |
 | `EXCEPTION_INT_DIVIDE_BY_ZERO`, exit 148 | Display reports 0.00 Hz. Xvfb cannot be used; see the display section. |

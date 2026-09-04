@@ -14,3 +14,7 @@ runtime/
 dist/
 __pycache__/
 *.pyc
+
+# Machine-local paths written by install/setup.sh. Never committed:
+# every machine's install lives somewhere different.
+dlss5nr.local.json

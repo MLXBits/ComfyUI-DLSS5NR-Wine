@@ -28,6 +28,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# The node resolves paths as: DLSS5NR_* environment > dlss5nr.local.json next
+# to nodes.py > a scan. Read the config here too, or this script can report a
+# healthy install the node will never find (or the reverse).
+HERE=$(cd "$(dirname "$0")" && pwd)
+CFG=${DLSS5NR_CONFIG:-$HERE/../dlss5nr.local.json}
+cfg_get() {
+    [ -f "$CFG" ] || return 1
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CFG" | head -1
+}
+if [ -f "$CFG" ]; then
+    [ -n "$ROOT" ]        || ROOT=$(cfg_get root)
+    [ -n "$PREFIX" ]      || PREFIX=$(cfg_get prefix)
+    [ -n "$WINE" ]        || WINE=$(cfg_get wine)
+    [ -n "$DISPLAY_ARG" ] || DISPLAY_ARG=$(cfg_get display)
+fi
+
 FAIL=0
 WARN=0
 ok()   { printf '  \033[32mok\033[0m    %-22s %s\n' "$1" "${2-}"; }
@@ -158,6 +174,11 @@ fi
 # it, not a single "not found" line.
 [ -n "$ROOT" ] || ROOT="$HOME/dlss5nr"
 if [ -d "$ROOT" ]; then ok "root" "$ROOT"; else bad "root" "$ROOT does not exist yet"; fi
+if [ -f "$CFG" ]; then ok "node config" "$CFG"
+else
+    warn "node config" "no $(basename "$CFG") - the node falls back to a scan"
+    hint "Run install/setup.sh to write it, or set DLSS5NR_* in ComfyUI's environment."
+fi
 if true; then
     [ -f "$ROOT/tools/dlss5nr_video.py" ] && ok "  upstream tree" "tools/dlss5nr_video.py" || {
         bad "  upstream tree" "tools/dlss5nr_video.py missing"
