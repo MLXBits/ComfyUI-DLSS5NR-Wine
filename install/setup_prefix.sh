@@ -52,6 +52,13 @@ else
 fi
 
 # ── ② Win10 版 d3dcompiler_47 ───────────────────────────────
+# ⚠️ 本步骤对 **kos94ok/Wine 这条路是不需要的** —— 实测三个原生二进制里 D3DCompile
+#    命中 0，依赖只有 KERNEL32/d3d12/dxgi/msvcrt/ole32。需要 cs_5_1 编译器的是
+#    RenoDX/ReShade 那条（在 Wine 下已确认走不通的）路。保留是为了那条路万一被修好；
+#    设 DLSS5NR_SKIP_DXC=1 可跳过，省一次 Range 下载。
+if [ "${DLSS5NR_SKIP_DXC:-0}" = "1" ]; then
+  echo "== ② d3dcompiler_47.dll —— 跳过（本路径不需要，见注释）"
+else
 echo "== ② d3dcompiler_47.dll（要 Win10 SDK 10.0.x，才认 cs_5_1）"
 CUR=$(stat -c%s "$S/d3dcompiler_47.dll" 2>/dev/null || echo 0)
 if [ "$CUR" = "$DXC_BYTES" ]; then
@@ -65,6 +72,7 @@ else
     else
         echo "   ✗ 取不到 —— NR 会因 cs_5_1 编译失败静默退回普通 DLAA"
     fi
+fi
 fi
 
 # ── ③ dxvk-nvapi + vkd3d-proton ─────────────────────────────
