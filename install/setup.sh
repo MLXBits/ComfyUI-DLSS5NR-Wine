@@ -18,10 +18,11 @@ set -u
 ROOT=${DLSS5NR_ROOT:-$HOME/dlss5nr}
 PROTON_ROOT=${DLSS5_PROTON_ROOT:-$HOME/dlss5}
 PROTON_TAG=${PROTON_TAG:-GE-Proton11-6}
-# Note the trade-off: the NR snippet is 310.8 and NVIDIA publishes nothing past
-# 310.7.0, so this carrier is one minor version behind the snippet it runs
-# under. kos94ok's README asks for a matched set. It works, but if you already
-# have a matched 310.8 carrier, drop it in first - an existing file is kept.
+# The NR snippet is 310.8 and NVIDIA publishes nothing past 310.7.0, so this
+# carrier runs one minor version behind it. Measured: a real 310.8 carrier and
+# this one give pixel-identical output for every preset, so the gap does not
+# matter in practice. An existing carrier is never overwritten if you prefer
+# to supply a matched one.
 #
 # Pinned deliberately, and not just for reproducibility: the model_preset
 # letters (J/K/L/M) index networks *inside this DLL*, not in the driver. On

@@ -109,19 +109,20 @@ DLSS SR carrier. It is idempotent; re-run it after fixing anything it reported.
 The carrier comes from NVIDIA's public SDK at a pinned tag (`v310.7.0`): 59 MB,
 redistributable, and reproducible from a URL anyone can check.
 
-**This is a deliberate trade-off, not a free win.** The NR snippet these
-projects target is 310.8, and NVIDIA's public SDK stops at 310.7.0 - there is
-no published 310.8, for the same reason `nvngx_dlssnr.dll` is not published.
-kos94ok's README asks you to keep `nvngx_dlss.dll`, `nvngx_dlssnr.dll`, the
-caller shim and `_nvngx.dll` from one compatible set, and this breaks that by
-one minor version. It works - feature 18 evaluates fine across hundreds of
-frames - but it is the most likely reason the `model_preset` results below
-differ from upstream's.
+The NR snippet these projects target reports `FileVersion 310.8.0`, and NVIDIA
+publishes nothing past 310.7.0, so this runs the carrier one minor version
+behind the snippet - which is not the matched set kos94ok's README asks for.
 
-If you already have a matched 310.8 carrier, put it at
+**That gap was measured and makes no difference.** Running the same five-preset
+sweep against a genuine 310.8 carrier and against NVIDIA's 310.7.0 produced
+**pixel-identical output for every preset** (`mean|diff| = 0.0000`, all of
+Default/J/K/L/M). The two builds differ by 21 KB and evidently not in the
+preset networks. Larger gaps do matter - see [Tuning](#model-preset---the-carriers-network),
+where `v310.4.0` turns out not to implement preset M at all.
+
+If you have a matched 310.8 carrier and would rather use it, put it at
 `<root>/runtime/nvngx_dlss.dll` before running `setup.sh`; an existing file is
-never overwritten. The pin also decides whether `model_preset` does anything at
-all - see [Tuning](#model-preset---the-carriers-network).
+never overwritten.
 
 Then supply the one file nobody can supply for you:
 
@@ -229,9 +230,10 @@ high-frequency energy vs Lanczos):
 > both SDK builds. And **M is not universally sharper** - on this carrier and
 > this footage it is slightly softer.
 >
-> The likeliest cause is the version gap: machine A ran a matched 310.8 carrier
-> alongside the 310.8 NR snippet, machine B runs NVIDIA's public 310.7.0 under
-> the same snippet. Preset M is simply a different network in the two builds.
+> The carrier *version gap* is not the cause: a 310.8 carrier and NVIDIA's
+> 310.7.0 give pixel-identical output for all five presets on machine B, so the
+> difference from machine A lies elsewhere - the footage, or the NR snippet
+> build (machine A's is 10,352 bytes smaller than the reference one used here).
 >
 > So `model_preset` is worth trying, but check it against your own carrier and
 > your own material rather than assuming the table above transfers. If M gives
