@@ -32,11 +32,17 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# 默认路径：装机脚本把仓库放这里
-DEFAULT_REPO = "/workspace/dlss5nr"
-DEFAULT_WINE = "/workspace/dlss5/GE-Proton10-34/files/bin/wine64"
-DEFAULT_PFX = "/workspace/dlss5/prefix/pfx"
-DEFAULT_DISPLAY = ":99"
+# 默认路径：装机脚本把仓库放这里。四项都可以用环境变量覆盖，这样同一份
+# 节点不用改代码就能跑在别的机器上（在 ComfyUI 的 systemd unit 或启动脚本
+# 里 export 即可）。
+#
+# 注意 GE-Proton 11 起 files/bin 里只有 wine（已是 64 位），不再有 wine64；
+# 老的 GE-Proton 10 才需要显式指到 wine64。
+DEFAULT_REPO = os.environ.get("DLSS5NR_ROOT", "/workspace/dlss5nr")
+DEFAULT_WINE = os.environ.get(
+    "DLSS5NR_WINE", "/workspace/dlss5/GE-Proton10-34/files/bin/wine64")
+DEFAULT_PFX = os.environ.get("DLSS5NR_PREFIX", "/workspace/dlss5/prefix/pfx")
+DEFAULT_DISPLAY = os.environ.get("DLSS5NR_DISPLAY", ":99")
 
 # 档位 -> (倍率, PerfQualityValue)。取自上游 _PERF_QUALITY，写死在这里只是为了
 # 让下拉框有稳定顺序；真正的值仍从上游模块校验。
