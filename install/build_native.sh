@@ -6,11 +6,30 @@
 # MinGW-w64 13 自带 d3d12.h，bridge 和 caller shim 一次全过。
 set -euo pipefail
 
-ROOT=${1:-/workspace/dlss5nr}
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# Same resolution ladder as nodes.py, setup.sh and doctor.sh: argument, then
+# DLSS5NR_ROOT, then the installer's config file, then $HOME. /workspace is a
+# leftover from bootstrap_vast.sh and is only correct inside that container -
+# it used to be the default here, which meant this script tried to git clone
+# into a root-owned directory on every ordinary machine.
+CFG=${DLSS5NR_CONFIG:-$HERE/../dlss5nr.local.json}
+cfg_get() {
+    [ -f "$CFG" ] || return 1
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$CFG" | head -1
+}
+ROOT=${1:-${DLSS5NR_ROOT:-}}
+[ -n "$ROOT" ] || ROOT=$(cfg_get root) || true
+[ -n "$ROOT" ] || ROOT=$HOME/dlss5nr
 UPSTREAM=https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux
 CXX=${CXX:-x86_64-w64-mingw32-g++}
 
 echo "== 1) 上游源码 -> $ROOT"
+if ! mkdir -p "$ROOT" 2>/dev/null; then
+    echo "   FAIL 无法创建 $ROOT —— 换个位置：" >&2
+    echo "        install/build_native.sh <dir>   或   export DLSS5NR_ROOT=<dir>" >&2
+    exit 1
+fi
 if [ -d "$ROOT/.git" ]; then
     git -C "$ROOT" pull --ff-only
 else
@@ -19,12 +38,20 @@ fi
 
 echo "== 2) MinGW-w64"
 if ! command -v "$CXX" >/dev/null 2>&1; then
-    echo "   装 mingw-w64…"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -q mingw-w64
+    # Do not guess a package manager and do not assume root. Say what is
+    # missing and how to get it on the distro actually in front of you.
+    echo "   FAIL $CXX not found. Install the MinGW-w64 cross-compiler:" >&2
+    if   command -v pacman  >/dev/null 2>&1; then echo "        sudo pacman -S mingw-w64-gcc" >&2
+    elif command -v apt-get >/dev/null 2>&1; then echo "        sudo apt-get install mingw-w64" >&2
+    elif command -v dnf     >/dev/null 2>&1; then echo "        sudo dnf install mingw64-gcc-c++" >&2
+    elif command -v zypper  >/dev/null 2>&1; then echo "        sudo zypper install mingw64-cross-gcc-c++" >&2
+    else echo "        (no known package manager found; install it however your distro does)" >&2
+    fi
+    echo "   or point CXX at one: CXX=/path/to/x86_64-w64-mingw32-g++ $0" >&2
+    exit 1
 fi
 "$CXX" --version | head -1 | sed 's/^/   /'
 
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 echo "== 2.5) 打补丁：给 bridge 加 DLSS 模型预设覆盖"
 # 上游 bridge 从来没设过 DLSS.Hint.Render.Preset.*，SR carrier 一直跑在驱动默认档(K)。
 # 实测把它改成 L/M，高频能量从 +1.9% 跳到 +14.5%（vs Lanczos）。详见 README「调参」。
