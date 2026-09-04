@@ -253,9 +253,12 @@ class DLSS5NRWineUpscale:
             raise Dlss5NRWineError("%s\n---- host stderr ----\n%s" % (msg, tail))
 
         try:
+            # host 校验 warmup_frames > frame_count 就直接拒收 DNR2 头（退出码 5），
+            # 前端拿到的是一句没有上下文的 BrokenPipeError。批量小于 warmup 时
+            # （单张图最常见：默认 warmup=8 而 n=1）必须先夹住。
             proc.stdin.write(V.HEADER.pack(
                 V.MAGIC_DNR2, in_w, in_h, out_w, out_h,
-                int(warmup_frames), int(n), int(perf_quality),
+                min(int(warmup_frames), int(n)), int(n), int(perf_quality),
                 0,                              # profile
                 int(preset), int(STYLE_CHOICES[style]),
                 1 if auto_mask else 0,
