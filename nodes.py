@@ -156,10 +156,15 @@ def _host_highlights(log, keep=8):
     """
     noise = ("CollectGarbage", "Releasing resource", "Delayed destroy")
     body = [l for l in log if not any(n in l for n in noise)]
-    signal = [l for l in body
-              if "[dlss5nr]" in l or "host ready" in l
-              or "fail" in l.lower() or "error" in l.lower()]
-    picked = signal or body
+    # The bridge's own [dlss5nr] lines and the host banner are the ones that
+    # answer "did feature 18 actually run"; NGX's own errors are mostly the
+    # benign QAI/registry probing it always does under Wine, so they rank
+    # below and only top up whatever room is left.
+    primary = [l for l in body if "[dlss5nr]" in l or "host ready" in l]
+    secondary = [l for l in body
+                 if l not in primary
+                 and ("fail" in l.lower() or "error" in l.lower())]
+    picked = (primary + secondary) if primary else (secondary or body)
     if len(picked) <= keep:
         return picked
     return picked[:keep - 2] + ["..."] + picked[-2:]
