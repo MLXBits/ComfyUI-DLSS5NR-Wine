@@ -47,6 +47,9 @@ DEFAULT_WINE = os.environ.get(
     "DLSS5NR_WINE", "/workspace/dlss5/GE-Proton10-34/files/bin/wine64")
 DEFAULT_PFX = os.environ.get("DLSS5NR_PREFIX", "/workspace/dlss5/prefix/pfx")
 DEFAULT_DISPLAY = os.environ.get("DLSS5NR_DISPLAY", ":99")
+# Frame generation lives in its own directory because it is a separate,
+# optional capability: dlssg-worker.exe plus nvngx_dlssg.dll.
+DEFAULT_DLSSG = os.environ.get("DLSS5NR_DLSSG_DIR", "/workspace/dlss5nr/dlssg")
 
 # 档位 -> (倍率, PerfQualityValue)。取自上游 _PERF_QUALITY，写死在这里只是为了
 # 让下拉框有稳定顺序；真正的值仍从上游模块校验。
@@ -102,6 +105,27 @@ MODEL_PRESETS = {"Default (driver default - measured as K)": 0, "J (10)": 10, "K
 
 class Dlss5NRWineError(RuntimeError):
     pass
+
+
+def _wine_env(display, prefix, gpu_index):
+    """The environment every wine worker on this path needs.
+
+    Shared by the neural-rendering and frame-generation nodes so the two cannot
+    drift apart. Only builtin (=n) overrides would let NGX start while NvAPI
+    fails to see the physical adapter, which is why all four are native-first.
+    """
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    env.setdefault("XDG_RUNTIME_DIR", "/tmp/xdg")
+    env["WINEPREFIX"] = str(Path(prefix).expanduser().resolve())
+    env.setdefault("DLSS5NR_DISABLE_OTHER_SINKS", "1")
+    env["DLSS5NR_GPU_INDEX"] = str(int(gpu_index))
+    env.setdefault("DXVK_ENABLE_NVAPI", "1")
+    env.setdefault("DXVK_NVAPI_DRS_NGX_DLSS_NR_OVERRIDE", "on")
+    env.setdefault("WINEDLLOVERRIDES", "d3d12,d3d12core,nvapi64,dxgi=n,b")
+    env.setdefault("WINEDEBUG", "-all")
+    os.makedirs(env["XDG_RUNTIME_DIR"], exist_ok=True)
+    return env
 
 
 def _resolve_choice(value, table, what):
@@ -294,23 +318,12 @@ class DLSS5NRWineUpscale:
             raise Dlss5NRWineError(
                 "Factors above 1x need the ordinary DLSS carrier: put nvngx_dlss.dll in %s" % runtime)
 
-        env = os.environ.copy()
-        env["DISPLAY"] = display
-        env.setdefault("XDG_RUNTIME_DIR", "/tmp/xdg")
-        env["WINEPREFIX"] = str(Path(prefix).expanduser().resolve())
-        env.setdefault("DLSS5NR_DISABLE_OTHER_SINKS", "1")
-        env["DLSS5NR_GPU_INDEX"] = str(int(gpu_index))
-        env.setdefault("DXVK_ENABLE_NVAPI", "1")
-        env.setdefault("DXVK_NVAPI_DRS_NGX_DLSS_NR_OVERRIDE", "on")
-        # 只用 builtin(=n) 会让 NGX 起来但 NvAPI 看不到物理显卡 —— 上游注释与我们实测一致
-        env.setdefault("WINEDLLOVERRIDES", "d3d12,d3d12core,nvapi64,dxgi=n,b")
-        env.setdefault("WINEDEBUG", "-all")
+        env = _wine_env(display, prefix, gpu_index)
         mp = _resolve_choice(model_preset, MODEL_PRESETS, "model_preset")
         if mp:
             env["DLSS5NR_MODEL_PRESET"] = str(mp)
         else:
             env.pop("DLSS5NR_MODEL_PRESET", None)
-        os.makedirs(env["XDG_RUNTIME_DIR"], exist_ok=True)
 
         log: list[str] = []
         proc = subprocess.Popen([str(Path(wine).expanduser()), str(host), str(runtime)],
@@ -423,6 +436,134 @@ class DLSS5NRWineUpscale:
         return (torch.from_numpy(out), report)
 
 
+
+# DLSSG frame counts. The key is the output multiplier; the value is how many
+# frames the runtime generates between each pair, which is what the worker is
+# actually told. The runtime reports its own MultiFrameCountMax at session
+# setup and the session refuses anything above it.
+MULTIPLIER_CHOICES = {
+    "2x (1 generated frame)": 1,
+    "3x (2 generated frames)": 2,
+    "4x (3 generated frames)": 3,
+    "5x (4 generated frames)": 4,
+    "6x (5 generated frames)": 5,
+}
+
+
+class DLSS5NRWineInterpolate:
+    """IMAGE batch -> DLSS Frame Generation -> longer IMAGE batch.
+
+    Separate from the upscaler on purpose: a different NGX feature, a different
+    worker, and a runtime (nvngx_dlssg.dll) that NVIDIA actually publishes.
+    Chain it after the upscaler if you want both.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "multiplier": (list(MULTIPLIER_CHOICES), {"default": "2x (1 generated frame)",
+                               "tooltip": "Output frame count relative to input. The runtime "
+                                          "caps this; 5 generated frames (6x) is the current max."}),
+                "dlssg_dir": ("STRING", {"default": DEFAULT_DLSSG, "multiline": False,
+                              "tooltip": "Directory holding dlssg-worker.exe and nvngx_dlssg.dll."}),
+                "wine": ("STRING", {"default": DEFAULT_WINE, "multiline": False}),
+                "prefix": ("STRING", {"default": DEFAULT_PFX, "multiline": False}),
+                "display": ("STRING", {"default": DEFAULT_DISPLAY, "multiline": False}),
+                "source_fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
+                               "tooltip": "Only used to timestamp frames for the runtime. It does "
+                                          "not resample; output is exactly multiplier x input."}),
+                "detect_scene_cuts": ("BOOLEAN", {"default": True,
+                                      "tooltip": "Drop generated frames across a hard cut instead "
+                                                 "of interpolating through it."}),
+                "gpu_index": ("INT", {"default": 0, "min": 0, "max": 7}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "report")
+    FUNCTION = "interpolate"
+    CATEGORY = "image/DLSS 5 NR (Wine)"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, multiplier):
+        try:
+            _resolve_choice(multiplier, MULTIPLIER_CHOICES, "multiplier")
+        except Dlss5NRWineError as exc:
+            return str(exc)
+        return True
+
+    def interpolate(self, image, multiplier, dlssg_dir, wine, prefix, display,
+                    source_fps, detect_scene_cuts, gpu_index):
+        from fractions import Fraction
+
+        from .dlssg import DlssgError, DlssgSession, GuideGenerator
+
+        generated = _resolve_choice(multiplier, MULTIPLIER_CHOICES, "multiplier")
+        root = Path(dlssg_dir).expanduser().resolve()
+        worker = root / "dlssg-worker.exe"
+        runtime = root / "nvngx_dlssg.dll"
+        for path, what in ((worker, "dlssg-worker.exe (supply your own; see NOTICE-frame-interpolation.md)"),
+                           (runtime, "nvngx_dlssg.dll (install/setup.sh can fetch it)")):
+            if not path.is_file():
+                raise Dlss5NRWineError("Missing %s: %s" % (what, path))
+
+        img = image.detach().cpu().float().clamp(0.0, 1.0).numpy()
+        if img.ndim != 4 or img.shape[-1] < 3:
+            raise Dlss5NRWineError("Bad IMAGE shape: %s" % (tuple(img.shape),))
+        n, h, w = img.shape[0], img.shape[1], img.shape[2]
+        if n < 2:
+            raise Dlss5NRWineError("Frame generation needs at least 2 frames, got %d." % n)
+        if w % 2 or h % 2:
+            raise Dlss5NRWineError("Input must have even dimensions, got %dx%d." % (w, h))
+
+        # The worker speaks RGBA8; alpha is unused but part of the frame stride.
+        rgba = np.empty((n, h, w, 4), dtype=np.uint8)
+        rgba[..., :3] = np.rint(img[..., :3] * 255.0).astype(np.uint8)
+        rgba[..., 3] = 255
+
+        rate = Fraction(source_fps).limit_denominator(100000)
+        env = _wine_env(display, prefix, gpu_index)
+        guides = GuideGenerator(w, h)
+        out = []
+        cuts = 0
+        try:
+            with DlssgSession(wine, worker, root, env, w, h, n, generated) as session:
+                maximum = session.maximum
+                for i in range(n):
+                    motion, reset, _score, _dup = guides.process(rgba[i])
+                    ts = Fraction(i) / rate if rate else Fraction(i)
+                    if i == 0:
+                        session.process_frame(rgba[i], motion, ts, reset=True)
+                        out.append(rgba[i])
+                        continue
+                    made = session.process_frame(rgba[i], motion, ts, reset=reset)
+                    # Interpolating across a cut produces smeared garbage, so the
+                    # generated frames are dropped and the cut stays hard.
+                    if reset and detect_scene_cuts:
+                        cuts += 1
+                    else:
+                        out.extend(made)
+                    out.append(rgba[i])
+                log = session.log_text().splitlines()
+        except DlssgError as exc:
+            raise Dlss5NRWineError(str(exc))
+
+        stacked = np.stack(out).astype(np.float32) / 255.0
+        result = torch.from_numpy(np.ascontiguousarray(stacked[..., :3]))
+        report = "\n".join([
+            "DLSS Frame Generation (DLSSG) - Wine path",
+            "  %d frames -> %d frames   %dx%d   %s" % (n, len(out), w, h, multiplier),
+            "  generated per interval %d   runtime MultiFrameCountMax %d" % (generated, maximum),
+            "  source_fps %.3f   scene cuts held hard: %d" % (source_fps, cuts),
+            "  worker=%s" % worker,
+            "  runtime nvngx_dlssg.dll=%d B" % runtime.stat().st_size,
+            "  worker highlights:",
+        ] + ["    " + line for line in _host_highlights(log)])
+        return (result, report)
+
+
 class DLSS5NRWineStatus:
     """Run this first: touches no GPU, only checks that files and environment are present."""
 
@@ -475,9 +616,11 @@ class DLSS5NRWineStatus:
 
 NODE_CLASS_MAPPINGS = {
     "DLSS5NRWineUpscale": DLSS5NRWineUpscale,
+    "DLSS5NRWineInterpolate": DLSS5NRWineInterpolate,
     "DLSS5NRWineStatus": DLSS5NRWineStatus,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "DLSS5NRWineUpscale": "DLSS 5 Neural Rendering - Wine (Linux)",
+    "DLSS5NRWineInterpolate": "DLSS 5 Frame Generation - Wine (Linux)",
     "DLSS5NRWineStatus": "DLSS 5 NR - Self Check (Wine)",
 }
