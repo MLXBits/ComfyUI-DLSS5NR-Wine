@@ -48,8 +48,8 @@ On both, the host's two failure paths (`CreateFeature(18) failed` and
 `DLSSNR EvaluateFeature failed`) never fired, and the report ends with
 `[dlss5nr] Feature18 EvaluateFeature succeeded`.
 
-Only tested on Blackwell. `0xBAD00001` means your `nvngx_dlssnr.dll` does not
-support the GPU you are running it on.
+DLSS 5 Neural Rendering requires **Blackwell** (RTX 50-series). `0xBAD00001`
+is `FAIL_FeatureNotSupported` - the runtime declining the GPU it was given.
 
 ## Why this repo exists
 
@@ -78,7 +78,7 @@ Nine specific walls, with first-hand logs, are documented in
 
 ## Requirements
 
-- An NVIDIA RTX GPU whose driver your `nvngx_dlssnr.dll` supports
+- An RTX 50-series (Blackwell) GPU - feature 18 is Blackwell-only
 - A GE-Proton build (Steam's `compatibilitytools.d` counts; the installer will
   download one if you have none)
 - An X display that reports a **non-zero refresh rate** - see below
@@ -256,14 +256,14 @@ Run `install/doctor.sh` first; it explains most of these in place.
 | `D3D12CreateDevice failed 0x80004002` | `WINEDLLOVERRIDES` is missing `d3d12`/`d3d12core`. The node sets all four. |
 | `LoadLibrary(dlss5nr_bridge.dll) failed: 126` | Prefix built with bare `wineboot`; it has Wine's builtin stubs, not DXVK. Rebuild via `proton run wineboot -u`. |
 | `NvAPI_EnumPhysicalGPUs failed: -2`, then `0xBAD00001` | Same cause - `nvapi64.dll` was never loaded. |
-| `0xBAD00001` on a good prefix | Your `nvngx_dlssnr.dll` does not support this GPU. |
+| `0xBAD00001` on a good prefix | `FAIL_FeatureNotSupported`. Feature 18 needs Blackwell; on a Blackwell card it means the runtime build itself declined it. |
 | NGX `NGXGetPathUsingQAI` errors in the report | Benign. QAI and registry probing always fail under Wine before the working path is found. |
 
 ## Known limitations
 
 1. Motion vectors come from **OpenCV optical flow**, not real motion vectors.
    Temporal artifacts on real footage are possible; check by eye.
-2. Only tested on Blackwell (RTX 5090).
+2. Blackwell only, and only tested on the RTX 5090 within that.
 3. Input must have even dimensions.
 4. Requires an X display even when headless.
 
