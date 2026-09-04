@@ -172,7 +172,17 @@ class DLSS5NRWineUpscale:
         if not bridge.is_file():
             raise Dlss5NRWineError("缺 dlss5nr_bridge.dll：%s" % bridge)
 
-        factor = SCALE_CHOICES[scale]
+        # 旧工作流可能存着改名前的档位字符串（例如 1.0x 那条加了警告后名字变了），
+        # 按前缀回退匹配，别让老文件直接报 KeyError。
+        if scale in SCALE_CHOICES:
+            factor = SCALE_CHOICES[scale]
+        else:
+            head = scale.split(' ')[0]
+            hit = [v for k, v in SCALE_CHOICES.items() if k.split(' ')[0] == head]
+            if not hit:
+                raise Dlss5NRWineError(
+                    "未知放大档 %r，可选：%s" % (scale, list(SCALE_CHOICES)))
+            factor = hit[0]
         img = image.detach().cpu().float().clamp(0.0, 1.0).numpy()
         if img.ndim != 4 or img.shape[-1] < 3:
             raise Dlss5NRWineError("IMAGE 形状不对：%s" % (tuple(img.shape),))
