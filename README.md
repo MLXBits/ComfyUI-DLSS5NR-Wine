@@ -236,6 +236,10 @@ and downloads nothing. It is never fetched from a community mirror. `--no-dlssg`
 [NOTICE-frame-interpolation.md](NOTICE-frame-interpolation.md) for where each
 file comes from and why neither is vendored.
 
+`dlssg-worker.exe` is the one binary here that is neither ours nor NVIDIA's.
+[docs/DLSSG-HOST.md](docs/DLSSG-HOST.md) scopes replacing it with a host we
+build ourselves, against NVIDIA's documented NGX API.
+
 **This node has not been verified end to end.** The Status table above covers
 feature 18 only. `dlssg.py` is a port (see
 [NOTICE-frame-interpolation.md](NOTICE-frame-interpolation.md)) and no run of
