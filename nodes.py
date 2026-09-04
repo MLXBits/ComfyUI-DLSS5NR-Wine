@@ -113,6 +113,25 @@ def _even(v: float) -> int:
     return max(2, int(round(v / 2.0) * 2))
 
 
+def _host_highlights(log, keep=8):
+    """挑出 host stderr 里有诊断价值的几行。
+
+    NGX 每次会话结束都会刷几十行 CollectGarbage / Releasing resource，
+    直接取 log[-6:] 只会看到这些拆卸噪声。真正想看的（host banner、
+    Init_ProjectID 结果、carrier 状态、被强制的模型预设、任何失败）
+    都在最前面。
+    """
+    noise = ("CollectGarbage", "Releasing resource", "Delayed destroy")
+    body = [l for l in log if not any(n in l for n in noise)]
+    signal = [l for l in body
+              if "[dlss5nr]" in l or "host ready" in l
+              or "fail" in l.lower() or "error" in l.lower()]
+    picked = signal or body
+    if len(picked) <= keep:
+        return picked
+    return picked[:keep - 2] + ["..."] + picked[-2:]
+
+
 def _drain(stream, sink, cap=400):
     def run():
         for raw in iter(stream.readline, b""):
@@ -340,8 +359,8 @@ class DLSS5NRWineUpscale:
                 (runtime / "nvngx_dlssnr.dll").stat().st_size,
                 "   carrier nvngx_dlss.dll=%d B" % (runtime / "nvngx_dlss.dll").stat().st_size
                 if (runtime / "nvngx_dlss.dll").is_file() else ""),
-            "  host 最后几行：",
-        ] + ["    " + l for l in log[-6:]])
+            "  host 关键几行：",
+        ] + ["    " + l for l in _host_highlights(log)])
         return (torch.from_numpy(out), report)
 
 
