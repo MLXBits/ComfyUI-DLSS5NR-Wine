@@ -195,14 +195,26 @@ high-frequency energy vs Lanczos):
 | **L (12)** | 0.3540 | **+14.3%** |
 | **M (13)** | 0.3546 | **+14.5%** |
 
-> **This did not reproduce on machine B.** On driver 610.57.04 with NVIDIA's
-> official SDK carrier, switching Default -> M changed 75.5% of pixels (so the
-> setting is definitely being applied) but moved high-frequency energy by
-> **-0.5%**, not +12 points. Candidate explanations, none isolated: a newer
-> driver may have moved the default preset; the official `nvngx_dlss.dll`
-> v310.7.0 is a different build from the one in Merserk's pack; and the source
-> material differs. Treat the table as machine A's result, and judge preset
-> choice on your own footage.
+> **The size of that gain is specific to the carrier build.** A preset sweep on
+> machine B (driver 610.57.04, official SDK carrier `v310.7.0`, 1344x992 H3
+> frames at 1.724x) reproduced part of it and contradicted part:
+>
+> | | machine A (Merserk carrier) | machine B (`v310.7.0`) | machine B (`v310.4.0`) |
+> |---|---|---|---|
+> | Default vs K | pixel-identical | pixel-identical | pixel-identical |
+> | J vs K | +0.1% | distinct, +0.05% | - |
+> | M vs K | **+12.6%** | distinct, **-2.5%** | **pixel-identical** |
+>
+> Three things follow. **The driver default is still K** - that part reproduces
+> exactly across a 20-version driver gap. **The preset letters are properties of
+> `nvngx_dlss.dll`, not of the driver**: on SDK `v310.4.0` preset M does not
+> exist and silently falls back to K, while K itself is byte-identical across
+> both SDK builds. And **M is not universally sharper** - on this carrier and
+> this footage it is slightly softer.
+>
+> So `model_preset` is worth trying, but check it against your own carrier and
+> your own material rather than assuming the table above transfers. If M gives
+> you output identical to K, your carrier does not implement it.
 
 ### Effect breakdown (machine A)
 
