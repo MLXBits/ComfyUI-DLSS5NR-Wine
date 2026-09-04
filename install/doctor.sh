@@ -182,7 +182,15 @@ if true; then
         hint "Place your own legally obtained copy at $ROOT/runtime/nvngx_dlssnr.dll"
     fi
     if [ -s "$ROOT/runtime/nvngx_dlss.dll" ]; then
-        ok "  nvngx_dlss.dll" "$(stat -c%s "$ROOT/runtime/nvngx_dlss.dll") B (carrier)"
+        csz=$(stat -c%s "$ROOT/runtime/nvngx_dlss.dll")
+        ok "  nvngx_dlss.dll" "$csz B (carrier)"
+        # The model_preset letters index networks inside this DLL. Older SDK
+        # builds simply lack the later ones and fall back to K silently.
+        if [ "$csz" -lt 40000000 ]; then
+            warn "  carrier presets" "small carrier - presets above K may not exist in this build"
+            hint "If model_preset M gives output identical to K, that is why."
+            hint "SDK v310.7.0 (~59 MB) implements M; v310.4.0 (~30 MB) does not."
+        fi
     else
         bad "  nvngx_dlss.dll" "missing (required for any scale above 1x)"
         hint "This one is redistributable and published by NVIDIA - no repack needed:"

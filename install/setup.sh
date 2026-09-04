@@ -18,6 +18,11 @@ set -u
 ROOT=${DLSS5NR_ROOT:-$HOME/dlss5nr}
 PROTON_ROOT=${DLSS5_PROTON_ROOT:-$HOME/dlss5}
 PROTON_TAG=${PROTON_TAG:-GE-Proton11-6}
+# Pinned deliberately, and not just for reproducibility: the model_preset
+# letters (J/K/L/M) index networks *inside this DLL*, not in the driver. On
+# SDK v310.4.0 preset M does not exist and silently falls back to K, producing
+# pixel-identical output with no error. v310.7.0 does implement it. Moving this
+# backwards will quietly disable the widget.
 DLSS_SDK_TAG=${DLSS_SDK_TAG:-v310.7.0}
 while [ $# -gt 0 ]; do
     case $1 in
@@ -188,9 +193,16 @@ else
     # Redistributable and published by NVIDIA. No third-party repack needed.
     url="https://raw.githubusercontent.com/NVIDIA/DLSS/$DLSS_SDK_TAG/lib/Windows_x86_64/rel/nvngx_dlss.dll"
     info "fetching from NVIDIA's public SDK ($DLSS_SDK_TAG)"
-    curl -fL --retry 3 --no-progress-meter -o "$ROOT/runtime/nvngx_dlss.dll" "$url" \
-        && ok "$(stat -c%s "$ROOT/runtime/nvngx_dlss.dll") B" \
-        || info "warning: download failed; scales above 1x will not work"
+    if curl -fL --retry 3 --no-progress-meter -o "$ROOT/runtime/nvngx_dlss.dll" "$url"; then
+        sz=$(stat -c%s "$ROOT/runtime/nvngx_dlss.dll")
+        ok "$sz B"
+        # v310.7.0 is ~59 MB; the v310.4.0 generation is ~30 MB and carries
+        # fewer preset networks. Size is a rough but useful tell.
+        [ "$sz" -lt 40000000 ] && info "note: smaller than expected for $DLSS_SDK_TAG; presets above K may be absent"
+    else
+        rm -f "$ROOT/runtime/nvngx_dlss.dll"
+        info "warning: download failed; scales above 1x will not work"
+    fi
 fi
 
 # ------------------------------------------------------------ 7. done ----

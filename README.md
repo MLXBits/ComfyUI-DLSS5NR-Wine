@@ -106,6 +106,12 @@ binaries, finds or downloads GE-Proton, builds the wine prefix **through
 Proton**, installs the NGX loader, points the registry at it, and fetches the
 DLSS SR carrier. It is idempotent; re-run it after fixing anything it reported.
 
+The carrier comes from NVIDIA's public SDK at a pinned tag (`v310.7.0`), which
+is redistributable and about 59 MB - no third-party repack needed. The pin
+matters beyond reproducibility: `model_preset` indexes networks inside that
+DLL, and older SDK builds simply do not contain the later ones. See
+[Tuning](#model-preset---the-carriers-network).
+
 Then supply the one file nobody can supply for you:
 
 ```
