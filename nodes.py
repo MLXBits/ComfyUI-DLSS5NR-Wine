@@ -41,7 +41,9 @@ DEFAULT_DISPLAY = ":99"
 # 档位 -> (倍率, PerfQualityValue)。取自上游 _PERF_QUALITY，写死在这里只是为了
 # 让下拉框有稳定顺序；真正的值仍从上游模块校验。
 SCALE_CHOICES = {
-    "1.0x (DLAA / 原尺寸神经渲染)": 1.0,
+    # ⚠️ 1.0x 没有 carrier，feature 18 直接作用在已经清晰的原片上会把它磨软
+    #    （实测 -3.9%）。feature 18 是给「放大后变软的画面」补结构的，别用 1.0x 求清晰。
+    "1.0x (DLAA / 原尺寸·会变软，别用来求清晰)": 1.0,
     "1.5x (Quality)": 1.5,
     "1.724x (Balanced)": 1.724,
     "2.0x (Performance)": 2.0,
@@ -119,7 +121,8 @@ class DLSS5NRWineUpscale:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "scale": (list(SCALE_CHOICES), {"default": "1.724x (Balanced)"}),
+                "scale": (list(SCALE_CHOICES), {"default": "1.724x (Balanced)",
+                          "tooltip": "求清晰必须 >1x。1.0x 档没有 carrier，只会变软"}),
                 "repo_dir": ("STRING", {"default": DEFAULT_REPO, "multiline": False}),
                 "wine": ("STRING", {"default": DEFAULT_WINE, "multiline": False}),
                 "prefix": ("STRING", {"default": DEFAULT_PFX, "multiline": False}),
@@ -138,7 +141,7 @@ class DLSS5NRWineUpscale:
                 "skin": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0, "step": 0.05,
                                    "tooltip": "-1 = 跟随 structure。⚠️ 只有 auto_mask 开启时才有效果"}),
                 "auto_mask": ("BOOLEAN", {"default": False,
-                                          "tooltip": "自动识别皮肤区域并保护它不被过度锐化 —— 会降低整体锐度。人脸特写建议开，产品/环境建议关"}),
+                                          "tooltip": "⚠️ 想要清晰就关掉。实测开启把 +1.9% 压回 -0.4%（相对 Lanczos）。画面里皮肤占比越大，它抑制得越多"}),
                 "reset_each_frame": ("BOOLEAN", {"default": False,
                                                  "tooltip": "关掉时域复用。静态图批量走这个，视频不要开。"}),
                 "channel_order": (["auto", "RGBA", "BGRA"],),
