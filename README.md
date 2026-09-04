@@ -1,187 +1,271 @@
 # ComfyUI-DLSS5NR-Wine
 
-**在 Linux 上跑通的 NVIDIA DLSS 5 Neural Rendering（NGX feature 18）ComfyUI 节点。**
+**NVIDIA DLSS 5 Neural Rendering (NGX feature 18) as a ComfyUI node on Linux.**
 
-IMAGE 批进 → feature 18 → IMAGE 批出。整批共用一个持久 NGX 会话，帧间保留时域状态。
+An IMAGE batch goes in, feature 18 runs over it, an IMAGE batch comes out. The
+whole batch shares one persistent NGX session, so temporal state carries across
+frames.
 
 ```
-ComfyUI IMAGE  →  wine  →  dlss5nr_host.exe  →  D3D12(vkd3d-proton) + DXVK-NVAPI
-                                              →  nvngx_dlss.dll   (carrier, >1x 时)
-                                              →  nvngx_dlssnr.dll (feature 18)
-                                              →  ComfyUI IMAGE
+ComfyUI IMAGE  ->  wine  ->  dlss5nr_host.exe  ->  D3D12 (vkd3d-proton) + DXVK-NVAPI
+                                                ->  nvngx_dlss.dll   (SR carrier, when scale > 1x)
+                                                ->  nvngx_dlssnr.dll (feature 18)
+                                                ->  ComfyUI IMAGE
 ```
+
+Feature 18 is a neural *post-process* at native resolution. The enlargement
+comes from ordinary DLSS Super Resolution acting as a carrier underneath it,
+which is why anything above 1x needs both DLLs.
 
 ---
 
-## 为什么会有这个仓库
+## Status
 
-Linux 上跑 DLSS 5 NR 的现成方案有两条，第一条是死的：
+Verified end to end on two machines:
 
-| 方案 | 状态 |
+| | machine A | machine B |
+|---|---|---|
+| GPU | RTX 5090 | RTX 5090 |
+| driver | 590.48.01 | 610.57.04 |
+| OS | Ubuntu 24.04 container (vast.ai) | CachyOS (Arch) |
+| Proton | GE-Proton10-34 | GE-Proton11-6 |
+| display | Xorg + dummy on `:99` | existing desktop session on `:0` |
+| result | 480x736 -> 960x1472, 8.72 fps at 2x | 1344x992 -> 2318x1710, 4.78 fps at 1.724x |
+
+On both, the host's two failure paths (`CreateFeature(18) failed` and
+`DLSSNR EvaluateFeature failed`) never fired, and the report ends with
+`[dlss5nr] Feature18 EvaluateFeature succeeded`.
+
+Only tested on Blackwell. `0xBAD00001` means your `nvngx_dlssnr.dll` does not
+support the GPU you are running it on.
+
+## Why this repo exists
+
+There are two routes to DLSS 5 NR on Linux. The first is dead:
+
+| route | status |
 |---|---|
-| Merserk worker + ReShade + `renodx-dlss5.addon64`（ComfyUI-DonutNodes PR #29 走这条） | ❌ Wine 下 **feature 18 create 之后 addon 静默 abort**，退出码 3 |
-| [kos94ok/ComfyUI-DLSS5-NR-Linux](https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux) 的 host（**本仓库用这条**） | ✅ 自己持有 D3D12/NGX 会话，不加载 ReShade/RenoDX |
+| Merserk worker + ReShade + `renodx-dlss5.addon64` (ComfyUI-DonutNodes PR #29 takes this one) | **broken** - under Wine the add-on aborts silently right after feature 18 is created, exit code 3 |
+| [kos94ok/ComfyUI-DLSS5-NR-Linux](https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux)'s host (**this repo**) | works - it owns its own D3D12/NGX session and loads neither ReShade nor RenoDX |
 
-第一条的失败不是配置问题，是上游未修的 bug：[NIGos/dlss5-bridge#22](https://github.com/NIGos/dlss5-bridge/issues/22)。
-本机 addon sha256 `D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952`
-与该 issue 报告者的**逐字节相同**，同为 Blackwell + vkd3d-proton；对方用的还是**参考版**
-`nvngx_dlssnr.dll`（165,840,496 B）一样崩。issue 至今 open，维护者没有 Linux 环境无法复现。
+The first route's failure is not a configuration problem, it is an unfixed
+upstream bug: [NIGos/dlss5-bridge#22](https://github.com/NIGos/dlss5-bridge/issues/22).
+The add-on build that fails is byte-identical to the reporter's, on the same
+Blackwell + vkd3d-proton combination, and it fails the same way with the
+*reference* `nvngx_dlssnr.dll` - so changing NR runtime version does not help.
+The issue is still open; the maintainer has no Linux machine to reproduce on.
 
-上游 kos94ok 项目只发 Windows 用法、没有 release，且构建脚本注明 D3D12 bridge 需要
-MSVC/Windows SDK。本仓库做的事是：**用 MinGW-w64 把它整套交叉编出来，包成 ComfyUI 节点，
-并把 Linux 侧那一串环境前置条件写成脚本。**
+Upstream kos94ok documents Windows usage only, publishes no releases, and its
+build script says the D3D12 bridge needs MSVC and the Windows SDK. That turns
+out to be conservative: **MinGW-w64 13 ships `d3d12.h` and cross-compiles the
+host, bridge and caller shim in one pass.** This repo does that, packages the
+result as a ComfyUI node, and scripts the Linux-side prerequisites.
 
-## 实测
+Nine specific walls, with first-hand logs, are documented in
+[docs/FINDINGS.md](docs/FINDINGS.md) (still in Chinese).
 
-RTX 5090 / 驱动 590.48.01 / Ubuntu 24.04 容器 / GE-Proton10-34：
+## Requirements
 
-| 项 | 结果 |
-|---|---|
-| 节点输出 | `(8, 736, 480, 3)` → `(8, 1472, 960, 3)` |
-| 与双三次放大的平均绝对差 | **0.0578**（不是插值） |
-| 1.0x 与输入的平均绝对差 | **28.049 / 255** |
-| feature 18 是否真跑 | host 的 `CreateFeature(18) failed` / `DLSSNR EvaluateFeature failed` 两条错误路径**均未触发** |
-| 吞吐 | **8.72 帧/秒**（2×）→ 15s@24fps 约 41 秒 |
+- An NVIDIA RTX GPU whose driver your `nvngx_dlssnr.dll` supports
+- A GE-Proton build (Steam's `compatibilitytools.d` counts; the installer will
+  download one if you have none)
+- An X display that reports a **non-zero refresh rate** - see below
+- ComfyUI, with `cv2` importable in its environment (without it, motion vectors
+  are zero and history resets every frame, losing all temporal benefit)
+- Your own `nvngx_dlssnr.dll`
 
-只测过 480×736 竖屏。倍率只支持 NVIDIA 的固定档：
-`1.0x(DLAA) / 1.5x(Quality) / 1.724x(Balanced) / 2.0x(Performance) / 3.0x(Ultra Performance)`。
-
-## 装
-
-### 1. 节点
+## Install
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine
+git clone https://github.com/MLXBits/ComfyUI-DLSS5NR-Wine
+cd ComfyUI-DLSS5NR-Wine
+
+install/doctor.sh          # what is already here, what is missing (read-only)
+install/setup.sh           # fills the gaps; no root, no package manager
 ```
 
-### 2. 上游源码 + 原生二进制
+`install/bootstrap_vast.sh` is the original one-shot installer for a root
+vast.ai container - `/workspace`, `apt-get`, supervisord. Use `setup.sh` on
+anything else.
+
+`setup.sh` clones the upstream source tree, unpacks the prebuilt MinGW
+binaries, finds or downloads GE-Proton, builds the wine prefix **through
+Proton**, installs the NGX loader, points the registry at it, and fetches the
+DLSS SR carrier. It is idempotent; re-run it after fixing anything it reported.
+
+Then supply the one file nobody can supply for you:
+
+```
+<root>/runtime/nvngx_dlssnr.dll
+```
+
+**This project does not ship, mirror, or link to it.** It is NVIDIA
+proprietary and pre-release.
+
+Finally point ComfyUI at the install. `setup.sh` prints the exact block; for a
+systemd user service it goes in
+`~/.config/systemd/user/comfyui.service.d/dlss5nr.conf`:
+
+```ini
+[Service]
+Environment=DLSS5NR_ROOT=/home/you/dlss5nr
+Environment=DLSS5NR_WINE=/home/you/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64/files/bin/wine
+Environment=DLSS5NR_PREFIX=/home/you/dlss5/prefix/pfx
+Environment=DLSS5NR_DISPLAY=:0
+```
+
+These four set the node's widget defaults, so nobody has to edit `nodes.py`.
+Restart ComfyUI - custom nodes are only scanned at startup.
+
+### The display, and why Xvfb will not do
+
+DXVK cannot create a Vulkan instance without an X display, and it divides by
+the reported refresh rate when creating a swapchain. **Xvfb reports 0.00 Hz**,
+so you get `EXCEPTION_INT_DIVIDE_BY_ZERO` inside `dxgi.dll` and exit code 148.
+Writing EDID into the Wine registry does not help - winex11 overwrites it with
+`BAD_EDID` at process start.
+
+If you already have a desktop session, use it (`DLSS5NR_DISPLAY=:0`) and skip
+this entirely. `doctor.sh` reports the refresh rate it finds.
+
+For a headless machine you need Xorg with `xf86-video-dummy` and a real
+Modeline. This is the one step needing root, and it is distro-specific:
 
 ```bash
-bash ComfyUI-DLSS5NR-Wine/install/build_native.sh          # clone 上游 + MinGW 交叉编译
-# 或者从本仓库 Releases 下预编好的 dlss5nr-native-mingw-x64.tar.gz 解到 /workspace/dlss5nr/（内含 native/bin/ 与 runtime/caller/）
+# Debian/Ubuntu: xserver-xorg-core xserver-xorg-video-dummy x11-xserver-utils
+# Arch:          xorg-server xf86-video-dummy xorg-xrandr
+sudo cp install/xorg-dummy.conf /etc/X11/xorg-dummy.conf
+sudo Xorg :99 -config /etc/X11/xorg-dummy.conf -noreset -nolisten tcp &
+DISPLAY=:99 xrandr | grep '\*'      # must not say 0.00
 ```
 
-### 3. Wine prefix + 虚拟显示
+ComfyUI must also see a valid `XAUTHORITY`. A service started from a desktop
+session inherits one; a service started from a bare ssh shell does not.
 
-```bash
-bash ComfyUI-DLSS5NR-Wine/install/setup_prefix.sh /workspace/dlss5/prefix/pfx
-```
+## Usage
 
-这一步做四件事，缺一个 worker 就起不来，每条的判据见 [docs/FINDINGS.md](docs/FINDINGS.md)：
+Run **DLSS 5 NR - Self Check (Wine)** first. It touches no GPU and confirms the
+seven files and the environment in a couple of seconds.
 
-- Xorg + dummy 驱动的虚拟显示 `:99`，**必须带真实 60 Hz Modeline**（Xvfb 报 0.00 Hz 会让 DXVK 整数除零崩溃）
-- Win10 SDK 版 `d3dcompiler_47.dll`（winetricks 给的 8.1 版不认 `cs_5_1`）
-- dxvk-nvapi ≥ 0.9.2 + vkd3d-proton ≥ 3.0.1（64-bit CuBIN 要这两个版本）
-- 驱动的 `nvngx.dll` / `_nvngx.dll` NGX loader + 注册表 `NGXCore` 指向
+Then **DLSS 5 Neural Rendering - Wine (Linux)**: `image` in, `image` + `report`
+out. Wire `report` into a **Preview as Text** node - it ends with the line that
+tells you whether feature 18 actually evaluated.
 
-### 4. 自备 NVIDIA 运行时
+Scale is restricted to NVIDIA's fixed quality tiers:
+`1.0x (DLAA) / 1.5x (Quality) / 1.724x (Balanced) / 2.0x (Performance) / 3.0x (Ultra Performance)`.
+Input must have even dimensions.
 
-**本仓库不含、也不会含任何 NVIDIA 专有二进制。** 自行取得后放到：
-
-```
-/workspace/dlss5nr/runtime/nvngx_dlssnr.dll     # feature 18，必需
-/workspace/dlss5nr/runtime/nvngx_dlss.dll       # 普通 DLSS carrier，>1x 时必需
-```
-
-### 5. 重启 ComfyUI
-
-自定义节点包只在启动时扫描。重启后节点出现在 `image/DLSS 5 NR (Wine)` 分类下。
-
-## 用
-
-先跑 **DLSS 5 NR · 自检 (Wine)** —— 不碰 GPU，几秒确认七项文件与环境齐不齐。
-
-再接 **DLSS 5 神经渲染 · Wine (Linux)**：`image` 进，`image` + `report` 出。
-
-关键参数：
-
-| 参数 | 说明 |
+| widget | note |
 |---|---|
-| `display` | **必填**，默认 `:99`。去掉 DISPLAY 后 DXVK 连 Vulkan instance 都建不出来（实测） |
-| `warmup_frames` | 给运行时的时域预热提示，不额外消耗帧 |
-| `reset_each_frame` | 静态图批量打开；视频不要开，会丢时域收益 |
-| `channel_order` | `auto` 即可。NR DLL 出现过 RGB / BGR 两种通道布局，`auto` 只判一次然后整段沿用，避免色彩闪烁 |
+| `display` | Required. Without it DXVK cannot even create a Vulkan instance. |
+| `warmup_frames` | Temporal warm-up hint; costs no extra frames. Clamped to the batch size. |
+| `reset_each_frame` | On for batches of unrelated stills; **off for video**, or you lose temporal reuse. |
+| `channel_order` | `auto` is fine. Decided once per batch, so colour cannot flicker mid-sequence. |
 
-## 调参
+## Tuning
 
-### 🔴 最大的杠杆：DLSS 模型预设
+### Model preset - the carrier's network
 
-**上游 bridge 从来没设过 `DLSS.Hint.Render.Preset.*`**，所以 SR carrier 一直跑在驱动默认档上。
-本仓库用 `install/patches/0001-dlss-model-preset.patch` 补上，并做成节点参数 `model_preset`。
+Upstream's bridge never sets `DLSS.Hint.Render.Preset.*`, so the SR carrier
+runs on whatever the driver defaults to. The bundled bridge is patched to honour
+`DLSS5NR_MODEL_PRESET`, exposed as the `model_preset` widget.
 
-实测（RTX 5090，H3 出片 736×1280 → 1.724×，`structure=2.0`，高频能量 vs Lanczos 放大）：
+Measured on machine A (RTX 5090, driver 590.48.01, 736x1280 source at 1.724x,
+`structure=2.0`, high-frequency energy vs Lanczos):
 
-| model_preset | 高频能量 | vs Lanczos |
+| model_preset | HF energy | vs Lanczos |
 |---|---:|---:|
-| Default（驱动默认） | 0.3158 | +1.9% |
+| Default | 0.3158 | +1.9% |
 | J (10) | 0.3159 | +2.0% |
-| K (11) | 0.3158 | +1.9%（与 Default **逐字节相同** → 默认就是 K） |
+| K (11) | 0.3158 | +1.9% (byte-identical to Default, so the default *is* K) |
 | **L (12)** | 0.3540 | **+14.3%** |
 | **M (13)** | 0.3546 | **+14.5%** |
 
-与社区口径一致：50 系驱动默认 Quality/Balanced 用 K、Performance 用 M；[hardforum](https://hardforum.com/threads/591-74-new-dlss-4-5.2045793/page-3) 上的说法是 K 相对 M "looked too blurry"。做法沿用 [Merserk v4.0 changelog](https://github.com/Merserk/dlss5-visual-enhancer/releases)：*"Added forced J/K/L/M preset support across DLAA, Quality, Balanced, Performance, Ultra Performance, and Ultra Quality hint parameters."* 键名从 `nvngx_dlss.dll` 字符串表确认。
+> **This did not reproduce on machine B.** On driver 610.57.04 with NVIDIA's
+> official SDK carrier, switching Default -> M changed 75.5% of pixels (so the
+> setting is definitely being applied) but moved high-frequency energy by
+> **-0.5%**, not +12 points. Candidate explanations, none isolated: a newer
+> driver may have moved the default preset; the official `nvngx_dlss.dll`
+> v310.7.0 is a different build from the one in Merserk's pack; and the source
+> material differs. Treat the table as machine A's result, and judge preset
+> choice on your own footage.
 
-### 效果分解
+### Effect breakdown (machine A)
 
-| 配置 | 高频能量 | vs Lanczos |
+| configuration | HF energy | vs Lanczos |
 |---|---:|---:|
-| 默认预设 · NR 关（只有 carrier） | 0.3016 | −2.6% |
-| 默认预设 · structure 2.0 | 0.3158 | +1.9% |
-| **M · NR 关（只有 carrier）** | 0.3387 | **+9.3%** |
-| M · structure 1.0 | 0.3422 | +10.5% |
-| **M · structure 2.0** | 0.3546 | **+14.5%** |
-| M · structure 3.0（超文档） | 0.3757 | **+21.3%** |
-| 默认预设 · structure 2.0 · auto_mask 开 | 0.3086 | −0.4% |
-| 1.0x · structure 2.0（无 carrier） | — | **−3.9% vs 原片** |
+| default preset, NR off (carrier only) | 0.3016 | -2.6% |
+| default preset, structure 2.0 | 0.3158 | +1.9% |
+| **M, NR off (carrier only)** | 0.3387 | **+9.3%** |
+| M, structure 1.0 | 0.3422 | +10.5% |
+| **M, structure 2.0** | 0.3546 | **+14.5%** |
+| M, structure 3.0 (beyond documented range) | 0.3757 | +21.3% |
+| default preset, structure 2.0, auto_mask on | 0.3086 | -0.4% |
+| 1.0x, structure 2.0 (no carrier) | - | **-3.9% vs source** |
 
-**光换预设就值 12 个百分点，NR 的 structure 再加 5 个。**
+### Suggested starting points
 
-### 建议档位
-
-| 场景 | scale | model_preset | structure | auto_mask |
+| case | scale | model_preset | structure | auto_mask |
 |---|---|---|---|---|
-| **通用（推荐）** | 1.724x / 2.0x | **M** | 2.0 | 关 |
-| 更锐（超文档范围） | 1.724x / 2.0x | M | 3.0 – 4.0 | 关 |
-| 保护皮肤质感 | 1.724x | M | 1.5 | 开（会损失大部分锐度） |
-| ❌ 不要用 | **1.0x** | — | — | — |
+| **general** | 1.724x / 2.0x | M | 2.0 | off |
+| sharper (undocumented range) | 1.724x / 2.0x | M | 3.0 - 4.0 | off |
+| protect skin texture | 1.724x | M | 1.5 | on (costs most of the sharpness) |
+| **avoid** | **1.0x** | - | - | - |
 
-### 各参数是否有效
+### Which parameters actually do anything
 
-| 参数 | 有效？ | 说明 |
+| parameter | effective? | note |
 |---|---|---|
-| `model_preset` | ✅✅ | **最大杠杆**，见上表 |
-| `structure` | ✅ | NVIDIA：Structure Intensity 管高频细节（环境光遮蔽/接触阴影/反射/次表面散射） |
-| `tone` | ✅ | 低频：整体光照与色彩响应。设 `0` = 完全保留原片配色 |
-| `auto_mask` | ✅ | 保护皮肤不被过度锐化 —— 因此会**降低**整体锐度 |
-| `skin` | ⚠️ | 只有 `auto_mask` 开启时才有效果。`-1` = 跟随 structure |
-| `intensity` | ❌ | 本路径无效。NVIDIA SDK 里没有独立 intensity |
-| `preset` / `style` | ❌ | inert：出厂 DLL 只含单一网络 |
+| `structure` | yes | The real sharpness lever. NVIDIA: Structure Intensity drives high-frequency detail (AO, contact shadows, reflections, subsurface scattering). |
+| `model_preset` | yes | Applied and measurable; see the caveat above on how much it buys. |
+| `tone` | yes | Low frequency: overall lighting and colour response. `0` keeps the source grade exactly. |
+| `auto_mask` | yes | Protects skin from over-sharpening, and therefore **reduces** overall sharpness. |
+| `skin` | conditional | Only has effect when `auto_mask` is on. `-1` means "follow structure", not "off". |
+| `intensity` | **no** | Inert here. The NVIDIA SDK has no separate intensity control. |
+| `preset` / `style` | **no** | Inert. The shipping DLL contains a single network. |
 
-### 范围
+NVIDIA documents `structure` as 0-1; Merserk's UI allows 0-2; it keeps having
+an effect past that but with no documentation behind it. Community consensus is
+that maxing it produces an "AI slop look" with fake pores and wrinkles on faces.
+**High-frequency energy is only a proxy for sharpness - confirm on real footage
+by eye before shipping.**
 
-NVIDIA SDK 文档写 **0–1**，Merserk UI 放到 **0–2**。实测 `structure` 越过 2.0 仍继续起效（3.0 → +21.3%），但已无文档背书。社区把拉满叫 **"AI slop look"**，人脸过锐会出假毛孔假皱纹 —— ⚠️ 高频能量只是锐度的代理指标，**上生产前必须用眼睛在真实素材上确认**。
+## Troubleshooting
 
-### 来源
+Run `install/doctor.sh` first; it explains most of these in place.
 
-- [NVIDIA · DLSS 5 3D-Guided Neural Rendering](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/) —— Structure/Tone 语义
-- [TechPowerUp · DLSS 5 Technical Preview](https://www.techpowerup.com/review/nvidia-dlss-5-technical-preview/3.html) —— 0–1 范围、「环境拉满人脸保守」的工作室共识
-- [Merserk releases](https://github.com/Merserk/dlss5-visual-enhancer/releases) —— 强制 J/K/L/M 预设的做法；控制表 0–2 范围
-- [hardforum](https://hardforum.com/threads/591-74-new-dlss-4-5.2045793/page-3) —— K 相对 M 偏软
-- [nexusmods/site/mods/2224](https://www.nexusmods.com/site/mods/2224) —— skin=−1 跟随 structure、preset/style 可能无效
-- [ThunderRuler/dlss5-installer-skill · config-reference.md](https://github.com/ThunderRuler/dlss5-installer-skill/blob/main/references/config-reference.md) —— NRPreset/NRStyle "Currently inert"
+| symptom | cause |
+|---|---|
+| `BrokenPipeError`, host exits in under a second | Header rejected. Usually `warmup_frames > frame_count` on an old build - this fork clamps it. |
+| `Value not in list` on a saved workflow | A dropdown label changed. This fork defers `scale` and `model_preset` validation to the node so old labels still resolve. |
+| `EXCEPTION_INT_DIVIDE_BY_ZERO`, exit 148 | Display reports 0.00 Hz. Xvfb cannot be used; see the display section. |
+| `D3D12CreateDevice failed 0x80004002` | `WINEDLLOVERRIDES` is missing `d3d12`/`d3d12core`. The node sets all four. |
+| `LoadLibrary(dlss5nr_bridge.dll) failed: 126` | Prefix built with bare `wineboot`; it has Wine's builtin stubs, not DXVK. Rebuild via `proton run wineboot -u`. |
+| `NvAPI_EnumPhysicalGPUs failed: -2`, then `0xBAD00001` | Same cause - `nvapi64.dll` was never loaded. |
+| `0xBAD00001` on a good prefix | Your `nvngx_dlssnr.dll` does not support this GPU. |
+| NGX `NGXGetPathUsingQAI` errors in the report | Benign. QAI and registry probing always fail under Wine before the working path is found. |
 
-## 已知限制
+## Known limitations
 
-1. 运动向量来自 **OpenCV 光流估计**（Merserk 兼容口径），不是真 motion vector。真实素材上可能有时域瑕疵，上生产前请肉眼确认。
-2. 只在 RTX 5090（Blackwell）上验证过。`0xBAD00001` = `FAIL_FeatureNotSupported`，表示你那份 `nvngx_dlssnr.dll` 不支持当前 GPU。
-3. 只测过 480×736。输入必须是偶数尺寸。
-4. 需要 X display（哪怕无头）。这条不是 ReShade 的锅 —— DXVK 建 Vulkan instance 时要 `VK_KHR_win32_surface`。
+1. Motion vectors come from **OpenCV optical flow**, not real motion vectors.
+   Temporal artifacts on real footage are possible; check by eye.
+2. Only tested on Blackwell (RTX 5090).
+3. Input must have even dimensions.
+4. Requires an X display even when headless.
 
-## 来源与许可
+## Credits and licence
 
-- 本仓库自身代码（`nodes.py`、`install/`、`docs/`）：MIT，见 [LICENSE](LICENSE)。
-- `dlss5nr_host.exe` / `dlss5nr_bridge.dll` / `nvngx.dll_comfy.dll`：由
-  [kos94ok/ComfyUI-DLSS5-NR-Linux](https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux)（MIT）的
-  **项目自有源码**用 MinGW-w64 交叉编译得到，可再分发。
-- NVIDIA DLSS / NGX 运行时：**专有，不在本仓库内**，由使用者自行合法取得。
+- This repository's own code (`nodes.py`, `install/`, `docs/`): MIT, see [LICENSE](LICENSE).
+- `dlss5nr_host.exe`, `dlss5nr_bridge.dll`, `nvngx.dll_comfy.dll`: cross-compiled
+  with MinGW-w64 from the **project-owned** sources of
+  [kos94ok/ComfyUI-DLSS5-NR-Linux](https://github.com/kos94ok/ComfyUI-DLSS5-NR-Linux)
+  (MIT), and redistributable.
+- `nvngx_dlss.dll` is fetched from NVIDIA's public
+  [DLSS SDK](https://github.com/NVIDIA/DLSS) and is redistributable under its
+  own licence.
+- `nvngx_dlssnr.dll` and other NVIDIA NGX runtimes are **proprietary, not in
+  this repository**, and are yours to obtain legally.
+
+Forked from [LQCCS/ComfyUI-DLSS5NR-Wine](https://github.com/LQCCS/ComfyUI-DLSS5NR-Wine),
+whose measurements on machine A are reproduced above.
