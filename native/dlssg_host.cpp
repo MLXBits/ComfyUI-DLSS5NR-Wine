@@ -278,6 +278,14 @@ static std::wstring RuntimeDir() {
             if (n > 0) {
                 std::wstring w(static_cast<size_t>(n - 1), L'\0');
                 MultiByteToWideChar(CP_UTF8, 0, env, -1, &w[0], n);
+                // Everything that sets this variable - nodes.py, the systemd
+                // drop-in, dlss5nr.local.json - holds a Linux path, but this
+                // is a Windows process: LoadLibraryW and GetFileAttributesW
+                // want a Windows path and would simply not find the file.
+                // Wine maps drive Z: to /, so rewrite it rather than making
+                // every caller know it is talking to a PE binary.
+                if (!w.empty() && w[0] == L'/') w = L"Z:" + w;
+                std::replace(w.begin(), w.end(), L'/', L'\\');
                 return w;
             }
         }
