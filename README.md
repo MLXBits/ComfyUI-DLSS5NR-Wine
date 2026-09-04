@@ -106,11 +106,22 @@ binaries, finds or downloads GE-Proton, builds the wine prefix **through
 Proton**, installs the NGX loader, points the registry at it, and fetches the
 DLSS SR carrier. It is idempotent; re-run it after fixing anything it reported.
 
-The carrier comes from NVIDIA's public SDK at a pinned tag (`v310.7.0`), which
-is redistributable and about 59 MB - no third-party repack needed. The pin
-matters beyond reproducibility: `model_preset` indexes networks inside that
-DLL, and older SDK builds simply do not contain the later ones. See
-[Tuning](#model-preset---the-carriers-network).
+The carrier comes from NVIDIA's public SDK at a pinned tag (`v310.7.0`): 59 MB,
+redistributable, and reproducible from a URL anyone can check.
+
+**This is a deliberate trade-off, not a free win.** The NR snippet these
+projects target is 310.8, and NVIDIA's public SDK stops at 310.7.0 - there is
+no published 310.8, for the same reason `nvngx_dlssnr.dll` is not published.
+kos94ok's README asks you to keep `nvngx_dlss.dll`, `nvngx_dlssnr.dll`, the
+caller shim and `_nvngx.dll` from one compatible set, and this breaks that by
+one minor version. It works - feature 18 evaluates fine across hundreds of
+frames - but it is the most likely reason the `model_preset` results below
+differ from upstream's.
+
+If you already have a matched 310.8 carrier, put it at
+`<root>/runtime/nvngx_dlss.dll` before running `setup.sh`; an existing file is
+never overwritten. The pin also decides whether `model_preset` does anything at
+all - see [Tuning](#model-preset---the-carriers-network).
 
 Then supply the one file nobody can supply for you:
 
@@ -217,6 +228,10 @@ high-frequency energy vs Lanczos):
 > exist and silently falls back to K, while K itself is byte-identical across
 > both SDK builds. And **M is not universally sharper** - on this carrier and
 > this footage it is slightly softer.
+>
+> The likeliest cause is the version gap: machine A ran a matched 310.8 carrier
+> alongside the 310.8 NR snippet, machine B runs NVIDIA's public 310.7.0 under
+> the same snippet. Preset M is simply a different network in the two builds.
 >
 > So `model_preset` is worth trying, but check it against your own carrier and
 > your own material rather than assuming the table above transfers. If M gives
