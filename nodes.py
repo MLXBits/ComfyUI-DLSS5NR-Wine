@@ -140,8 +140,6 @@ class DLSS5NRWineUpscale:
                 "prefix": ("STRING", {"default": DEFAULT_PFX, "multiline": False}),
                 "display": ("STRING", {"default": DEFAULT_DISPLAY, "multiline": False,
                                        "tooltip": "必填。去掉 DISPLAY 后 DXVK 连 Vulkan instance 都建不出来（实测）。"}),
-                "model_preset": (list(MODEL_PRESETS), {"default": "M (13) 最锐",
-                                  "tooltip": "🔴 清晰度最大杠杆。实测 L/M 比默认(K)高 12 个百分点。需要打过补丁的 bridge；未打补丁时此项无效果"}),
                 "warmup_frames": ("INT", {"default": 8, "min": 0, "max": 600}),
                 "style": (list(STYLE_CHOICES), {"tooltip": "❌ 无效：出厂 DLL 只含单一网络，没有可切换对象"}),
                 "preset": ("INT", {"default": 0, "min": 0, "max": 7,
@@ -160,6 +158,14 @@ class DLSS5NRWineUpscale:
                                                  "tooltip": "关掉时域复用。静态图批量走这个，视频不要开。"}),
                 "channel_order": (["auto", "RGBA", "BGRA"],),
                 "gpu_index": ("INT", {"default": 0, "min": 0, "max": 7}),
+                # 🔴 新参数一律加在**最后**，绝不插中间。
+                #    ComfyUI 的 widgets_values 是**按位置**读的：在中间插一个，
+                #    所有老工作流会整体错位一格 —— 2026-09-04 实际发生过，报了 6 个错
+                #    （model_preset 缺少连接 / warmup_frames、preset、gpu_index 类型错误 /
+                #     style、channel_order 值不适用）。加在末尾则老工作流缺最后一个值，
+                #    ComfyUI 自动取 default，完全兼容。
+                "model_preset": (list(MODEL_PRESETS), {"default": "M (13) 最锐",
+                                  "tooltip": "🔴 清晰度最大杠杆。实测 L/M 比默认(K)高 12 个百分点。需要打过补丁的 bridge；未打补丁时此项无效果"}),
             }
         }
 
@@ -168,9 +174,10 @@ class DLSS5NRWineUpscale:
     FUNCTION = "upscale"
     CATEGORY = "image/DLSS 5 NR (Wine)"
 
-    def upscale(self, image, scale, repo_dir, wine, prefix, display, model_preset,
-                warmup_frames, style, preset, intensity, tone, structure, skin,
-                auto_mask, reset_each_frame, channel_order, gpu_index):
+    def upscale(self, image, scale, repo_dir, wine, prefix, display, warmup_frames,
+                style, preset, intensity, tone, structure, skin, auto_mask,
+                reset_each_frame, channel_order, gpu_index,
+                model_preset="M (13) 最锐"):
         repo = Path(repo_dir).expanduser().resolve()
         V = _load_upstream(repo)
 
