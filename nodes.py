@@ -221,6 +221,26 @@ class DLSS5NRWineUpscale:
             }
         }
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, scale, model_preset):
+        """Accept choice labels from workflows saved before a relabelling.
+
+        ComfyUI validates COMBO widgets against the *current* option list and
+        rejects the whole prompt with "Value not in list", so _resolve_choice()
+        would never be reached on a saved graph carrying an old label. Naming
+        these two inputs here defers their validation to us; _resolve_choice()
+        then matches on the stable leading token, and a genuinely unknown value
+        still comes back as a readable validation error rather than silently
+        resolving to a default.
+        """
+        for value, table, what in ((scale, SCALE_CHOICES, "scale"),
+                                   (model_preset, MODEL_PRESETS, "model_preset")):
+            try:
+                _resolve_choice(value, table, what)
+            except Dlss5NRWineError as exc:
+                return str(exc)
+        return True
+
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("image", "report")
     FUNCTION = "upscale"
