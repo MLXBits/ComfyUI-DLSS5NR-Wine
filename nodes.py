@@ -664,19 +664,27 @@ class DLSS5NRWineInterpolate:
             if not path.is_file():
                 raise Dlss5NRWineError("Missing %s: %s" % (what, path))
 
-        img = image.detach().cpu().float().clamp(0.0, 1.0).numpy()
-        if img.ndim != 4 or img.shape[-1] < 3:
-            raise Dlss5NRWineError("Bad IMAGE shape: %s" % (tuple(img.shape),))
-        n, h, w = img.shape[0], img.shape[1], img.shape[2]
+        if image.ndim != 4 or image.shape[-1] < 3:
+            raise Dlss5NRWineError("Bad IMAGE shape: %s" % (tuple(image.shape),))
+        n, h, w = int(image.shape[0]), int(image.shape[1]), int(image.shape[2])
         if n < 2:
             raise Dlss5NRWineError("Frame generation needs at least 2 frames, got %d." % n)
         if w % 2 or h % 2:
             raise Dlss5NRWineError("Input must have even dimensions, got %dx%d." % (w, h))
 
         # The worker speaks RGBA8; alpha is unused but part of the frame stride.
+        # Converted one frame at a time. The whole-batch form
+        # (image.float().numpy(), then *255.0, then .astype) holds two float32
+        # copies of the entire clip at once just to fill a uint8 buffer -- 24GB
+        # at 328 frames of 2016x1488, against 3.9GB for the buffer itself.
+        # Every op below is out-of-place: `image` is ComfyUI's cached tensor and
+        # slicing it yields a view, so an in-place clamp would corrupt whatever
+        # the upstream node hands to its other consumers.
         rgba = np.empty((n, h, w, 4), dtype=np.uint8)
-        rgba[..., :3] = np.rint(img[..., :3] * 255.0).astype(np.uint8)
         rgba[..., 3] = 255
+        for i in range(n):
+            frame = image[i, ..., :3].detach().cpu().float()
+            rgba[i, ..., :3] = frame.clamp(0.0, 1.0).mul(255.0).round().to(torch.uint8).numpy()
 
         rate = Fraction(source_fps).limit_denominator(100000)
         env = _wine_env(display, prefix, gpu_index)
@@ -705,8 +713,23 @@ class DLSS5NRWineInterpolate:
         except DlssgError as exc:
             raise Dlss5NRWineError(str(exc))
 
-        stacked = np.stack(out).astype(np.float32) / 255.0
-        result = torch.from_numpy(np.ascontiguousarray(stacked[..., :3]))
+        # Fill a preallocated float32 array a frame at a time. The obvious
+        # `np.stack(out).astype(np.float32) / 255.0` holds three full-size
+        # copies simultaneously -- the uint8 stack, the astype temporary, and
+        # the quotient -- then a fourth for the contiguous RGB slice. At 328
+        # frames of 2016x1488 that is 71GB of transient to produce a 23.6GB
+        # result, which is what put ComfyUI in front of the OOM killer.
+        # copyto with casting="unsafe" does the uint8 -> float32 widening
+        # straight into the destination row, so nothing frame-sized is held.
+        # Divide rather than multiply by the reciprocal: measured on numpy
+        # 2.5.2, x * float32(1/255) differs from x / 255.0 by one ULP on 126 of
+        # the 256 possible byte values. Invisible in the image, but there is no
+        # reason to shift the output of an otherwise mechanical refactor.
+        result_np = np.empty((len(out), h, w, 3), dtype=np.float32)
+        for i, frame in enumerate(out):
+            np.copyto(result_np[i], frame[..., :3], casting="unsafe")
+        result_np /= np.float32(255.0)
+        result = torch.from_numpy(result_np)
         report = "\n".join([
             "DLSS Frame Generation (DLSSG) - Wine path",
             "  %d frames -> %d frames   %dx%d   %s" % (n, len(out), w, h, multiplier),
